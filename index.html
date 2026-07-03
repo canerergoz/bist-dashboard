@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<!--
+  BIST Assistant — Telefon Dashboard (P3.14, faz 1)
+
+  VERİ İÇERMEYEN statik kabuk: tüm veri, kullanıcının kendi GitHub fine-grained
+  token'ıyla tarayıcıdan GitHub Contents API üzerinden okunur/yazılır. Sunucu
+  yok; token yalnız bu cihazın localStorage'ında durur, hiçbir yere gönderilmez
+  (api.github.com hariç). Kaynak-of-truth: private repo webapp/index.html;
+  public kabuk repo'su yalnız deploy kopyasıdır.
+
+  Yatırım tavsiyesi değildir.
+-->
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>BIST Assistant</title>
+<style>
+  :root{--bg:#f5f6f7;--card:#ffffff;--ink:#22303c;--sub:#6b7f94;--line:#e0e4e8;
+        --pos:#2f6f44;--neg:#8b3a3a;--acc:#2980b9;--warn:#b8860b;}
+  *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;}
+  body{background:var(--bg);color:var(--ink);padding-bottom:64px;}
+  header{padding:14px 16px 8px;background:var(--card);border-bottom:1px solid var(--line);
+         position:sticky;top:0;z-index:5;}
+  header h1{font-size:17px;font-weight:700;}
+  header .sub{font-size:11px;color:var(--sub);}
+  main{padding:12px;max-width:720px;margin:0 auto;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:12px;margin-bottom:12px;}
+  .card h2{font-size:14px;margin-bottom:8px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{color:var(--sub);font-weight:600;text-align:left;padding:6px 4px;
+     border-bottom:1px solid var(--line);font-size:11px;}
+  td{padding:7px 4px;border-bottom:1px solid var(--line);}
+  tr:last-child td{border-bottom:none;}
+  .num{text-align:right;font-variant-numeric:tabular-nums;}
+  .pos{color:var(--pos);font-weight:600;} .neg{color:var(--neg);font-weight:600;}
+  .muted{color:var(--sub);font-size:11px;}
+  .pill{display:inline-block;background:#eef3f7;color:var(--acc);border-radius:10px;
+        padding:1px 8px;font-size:10px;font-weight:700;margin-left:6px;}
+  nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);
+      border-top:1px solid var(--line);z-index:10;}
+  nav button{flex:1;padding:11px 0 9px;border:none;background:none;font-size:12px;
+             color:var(--sub);cursor:pointer;}
+  nav button.on{color:var(--acc);font-weight:700;border-top:2px solid var(--acc);}
+  input,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;
+        font-size:14px;margin:4px 0 10px;background:#fff;color:var(--ink);}
+  label{font-size:12px;color:var(--sub);font-weight:600;}
+  .btn{display:block;width:100%;padding:11px;border:none;border-radius:8px;
+       background:var(--acc);color:#fff;font-size:14px;font-weight:700;cursor:pointer;}
+  .btn.gray{background:#e9ecef;color:var(--ink);}
+  .btn.small{width:auto;display:inline-block;padding:7px 12px;font-size:12px;}
+  .row{display:flex;gap:8px;} .row>*{flex:1;}
+  .msg{padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:10px;display:none;}
+  .msg.ok{background:#e7f3ea;color:var(--pos);display:block;}
+  .msg.err{background:#f7e9e9;color:var(--neg);display:block;}
+  .disclaimer{font-size:10px;color:var(--sub);text-align:center;padding:10px 16px 4px;}
+  .del{color:var(--neg);background:none;border:none;font-size:16px;cursor:pointer;padding:0 6px;}
+  .hide{display:none;}
+</style>
+</head>
+<body>
+<header>
+  <h1>BIST Assistant <span id="profilePill" class="pill hide"></span></h1>
+  <div class="sub" id="headSub">kurulum bekleniyor</div>
+</header>
+<main>
+  <div id="msg" class="msg"></div>
+
+  <!-- KURULUM -->
+  <section id="view-setup">
+    <div class="card">
+      <h2>Kurulum</h2>
+      <p class="muted" style="margin-bottom:8px">
+        Veriler kendi GitHub token'ınla, doğrudan bu cihazdan okunur. Token yalnız
+        bu telefonda saklanır (localStorage) ve github.com dışına asla gitmez.
+      </p>
+      <label>GitHub Token (fine-grained; yalnız ilgili repo, Contents: Read&nbsp;/&nbsp;Read-Write)</label>
+      <input id="inToken" type="password" placeholder="github_pat_...">
+      <label>Repo (sahip/ad)</label>
+      <input id="inRepo" placeholder="kullanici/assistant">
+      <label>Profil adın (portföy dosyanın adı; örn. isim)</label>
+      <input id="inProfile" placeholder="örn. ali">
+      <button class="btn" onclick="saveSetup()">Kaydet ve Bağlan</button>
+    </div>
+  </section>
+
+  <!-- ADAYLAR -->
+  <section id="view-adaylar" class="hide">
+    <div class="card">
+      <h2>Günün adayları <span id="adayMode" class="pill hide"></span></h2>
+      <div class="muted" id="adayMeta">yükleniyor…</div>
+      <table id="adayTable"></table>
+    </div>
+  </section>
+
+  <!-- KARNE -->
+  <section id="view-karne" class="hide">
+    <div class="card">
+      <h2>Ölçüm karnesi</h2>
+      <div class="muted" id="karneMeta">yükleniyor…</div>
+      <table id="karneTable"></table>
+      <p class="muted" style="margin-top:8px">
+        "Göreli" = XU100 endeksine kıyasla. Negatif göreli değer, önerilerin o
+        ufukta endeksin gerisinde kaldığını söyler — sistem bunu saklamaz.
+      </p>
+    </div>
+  </section>
+
+  <!-- PORTFÖY -->
+  <section id="view-portfoy" class="hide">
+    <div class="card">
+      <h2>Portföyüm</h2>
+      <div class="muted" id="pfMeta"></div>
+      <table id="pfTable"></table>
+      <div class="row" style="margin-top:10px">
+        <input id="pfSym" placeholder="Sembol (örn. BIMAS)" style="margin:0">
+        <input id="pfQty" type="number" inputmode="decimal" placeholder="Adet" style="margin:0">
+        <input id="pfCost" type="number" inputmode="decimal" placeholder="Maliyet" style="margin:0">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn gray" onclick="addPosition()">Ekle</button>
+        <button class="btn" onclick="savePortfolio()">Kaydet (repo'ya)</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<nav id="nav" class="hide">
+  <button id="nav-adaylar" onclick="show('adaylar')">Adaylar</button>
+  <button id="nav-karne" onclick="show('karne')">Karne</button>
+  <button id="nav-portfoy" onclick="show('portfoy')">Portföy</button>
+  <button onclick="resetSetup()">Çıkış</button>
+</nav>
+<div class="disclaimer">Bu uygulama kişisel bir takip aracıdır; yatırım tavsiyesi değildir.</div>
+
+<script>
+"use strict";
+const LS = { token:"bist_token", repo:"bist_repo", profile:"bist_profile" };
+const S = {
+  token: localStorage.getItem(LS.token) || "",
+  repo:  localStorage.getItem(LS.repo) || "",
+  profile: localStorage.getItem(LS.profile) || "",
+  prices: {},          // sembol -> Fiyat (artifact'ten)
+  positions: [],       // aktif profil pozisyonları
+  sha: null,           // profil dosyasının mevcut sha'sı (PUT için)
+};
+
+function msg(text, kind){ const el=document.getElementById("msg");
+  el.textContent=text; el.className="msg "+(kind||"ok");
+  if(kind!=="err") setTimeout(()=>{el.className="msg";}, 4000); }
+
+function slugify(name){
+  const map={"ç":"c","ğ":"g","ı":"i","ö":"o","ş":"s","ü":"u"};
+  return String(name||"").toLowerCase().trim()
+    .replace(/[çğıöşü]/g, ch=>map[ch])
+    .replace(/[^a-z0-9_-]+/g,"-").replace(/^-+|-+$/g,"");
+}
+
+function apiHeaders(extra){
+  return Object.assign({
+    "Authorization": "Bearer " + S.token,
+    "X-GitHub-Api-Version": "2022-11-28",
+  }, extra||{});
+}
+async function readJson(path){
+  const r = await fetch(`https://api.github.com/repos/${S.repo}/contents/${path}`,
+    { headers: apiHeaders({ "Accept": "application/vnd.github.raw+json" }) });
+  if (r.status === 404) return null;
+  if (r.status === 401 || r.status === 403) throw new Error("Token reddedildi (yetki/expiry kontrol et).");
+  if (!r.ok) throw new Error("Okuma hatası: HTTP " + r.status);
+  return await r.json();
+}
+async function fileSha(path){
+  const r = await fetch(`https://api.github.com/repos/${S.repo}/contents/${path}`,
+    { headers: apiHeaders({ "Accept": "application/vnd.github+json" }) });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error("Meta okunamadı: HTTP " + r.status);
+  return (await r.json()).sha || null;
+}
+async function writeJson(path, obj, message){
+  const content = btoa(unescape(encodeURIComponent(JSON.stringify(obj, null, 2) + "\n")));
+  const body = { message, content };
+  const sha = await fileSha(path);
+  if (sha) body.sha = sha;
+  const r = await fetch(`https://api.github.com/repos/${S.repo}/contents/${path}`,
+    { method:"PUT", headers: apiHeaders({ "Accept":"application/vnd.github+json" }),
+      body: JSON.stringify(body) });
+  if (!r.ok){
+    const detail = await r.text();
+    throw new Error("Yazma hatası: HTTP " + r.status + " " + detail.slice(0,120));
+  }
+}
+
+function show(view){
+  for (const v of ["setup","adaylar","karne","portfoy"])
+    document.getElementById("view-"+v).classList.toggle("hide", v!==view);
+  for (const v of ["adaylar","karne","portfoy"]){
+    const b=document.getElementById("nav-"+v); if(b) b.classList.toggle("on", v===view);
+  }
+}
+function fmt(x, d){ const n=Number(x);
+  return Number.isFinite(n) ? n.toLocaleString("tr-TR",{minimumFractionDigits:d??2,maximumFractionDigits:d??2}) : "-"; }
+function signCls(x){ const n=Number(x); return !Number.isFinite(n)?"":(n>0?"pos":(n<0?"neg":"")); }
+
+async function loadAdaylar(){
+  const el=document.getElementById("adayTable"), meta=document.getElementById("adayMeta");
+  try{
+    const art = await readJson("data/latest_core_candidates.json");
+    if(!art){ meta.textContent="Artifact bulunamadı."; return; }
+    const rows = art.ordered_candidates || [];
+    S.prices = {};
+    for (const r of rows){ const sym=String(r["Hisse"]||"").replace(".IS","");
+      if (sym && r["Fiyat"]!=null) S.prices[sym]=Number(r["Fiyat"]); }
+    const mode = rows.length ? (rows[0]["Scoring Mode"]||"") : "";
+    const pill=document.getElementById("adayMode");
+    pill.textContent=mode; pill.classList.toggle("hide", !mode);
+    meta.textContent = `üretim: ${String(art.generated_at||"").slice(0,16).replace("T"," ")} | ${rows.length} aday`;
+    let html = "<tr><th>#</th><th>Hisse</th><th>Şirket</th><th class=num>Fiyat</th><th class=num>Gün%</th><th class=num>Skor</th></tr>";
+    rows.slice(0,15).forEach((r,i)=>{
+      const chg=r["Günlük Değişim %"];
+      html += `<tr><td>${i+1}</td><td><b>${String(r["Hisse"]||"").replace(".IS","")}</b></td>
+        <td class=muted>${(r["Şirket Adı"]||"").slice(0,18)}</td>
+        <td class=num>${fmt(r["Fiyat"])}</td>
+        <td class="num ${signCls(chg)}">${fmt(chg,1)}</td>
+        <td class=num>${fmt(r["V3 Skor"] ?? r["Karar Skoru"],1)}</td></tr>`;
+    });
+    el.innerHTML = html;
+  }catch(e){ meta.textContent=""; msg(e.message,"err"); }
+}
+
+async function loadKarne(){
+  const el=document.getElementById("karneTable"), meta=document.getElementById("karneMeta");
+  try{
+    const rep = await readJson("data/analysis/morning_pick_report.json");
+    if(!rep){ meta.textContent="Rapor bulunamadı."; return; }
+    const s = rep.summary||{};
+    meta.textContent = `rapor: ${rep.report_date||"?"} | değerlendirilen: ${rep.evaluated??"?"} | `+
+      `kazanma: %${fmt(s.win_rate_pct,1)} | ort. getiri: %${fmt(s.avg_return_pct,2)}`;
+    const by = ((rep.relative_summary||{}).by_group||{}).candidate || {};
+    let html = "<tr><th>Ufuk</th><th class=num>Göreli %</th><th class=num>Göreli kazanma</th><th class=num>n</th></tr>";
+    for (const h of ["1","3","5","10"]){
+      const d = by[h]||{};
+      html += `<tr><td>${h} gün</td>
+        <td class="num ${signCls(d.avg_relative_return_pct)}">${fmt(d.avg_relative_return_pct,2)}</td>
+        <td class=num>%${fmt(d.relative_win_rate_pct,1)}</td><td class=num>${d.n??"-"}</td></tr>`;
+    }
+    el.innerHTML = html;
+  }catch(e){ meta.textContent=""; msg(e.message,"err"); }
+}
+
+function pfPath(){ return `webapp/portfolios/${slugify(S.profile)}.json`; }
+
+function renderPortfolio(){
+  const el=document.getElementById("pfTable"), meta=document.getElementById("pfMeta");
+  let total=0, cost=0;
+  let html="<tr><th>Hisse</th><th class=num>Adet</th><th class=num>Maliyet</th><th class=num>Fiyat</th><th class=num>K/Z %</th><th></th></tr>";
+  S.positions.forEach((p,i)=>{
+    const price=S.prices[String(p.symbol||"").toUpperCase()] ?? null;
+    const value=(price!=null&&p.quantity)?price*p.quantity:null;
+    const basis=(p.avg_cost&&p.quantity)?p.avg_cost*p.quantity:null;
+    if(value!=null) total+=value; if(basis!=null) cost+=basis;
+    const pnl=(price!=null&&p.avg_cost)?((price/p.avg_cost-1)*100):null;
+    html+=`<tr><td><b>${p.symbol}</b></td><td class=num>${fmt(p.quantity,0)}</td>
+      <td class=num>${fmt(p.avg_cost)}</td><td class=num>${price!=null?fmt(price):"-"}</td>
+      <td class="num ${signCls(pnl)}">${pnl!=null?fmt(pnl,1):"-"}</td>
+      <td><button class=del onclick="delPosition(${i})">×</button></td></tr>`;
+  });
+  el.innerHTML=html;
+  const pnlTot = cost>0 ? ((total/cost-1)*100) : null;
+  meta.innerHTML = S.positions.length
+    ? `Toplam değer: <b>${fmt(total)} TL</b>` +
+      (pnlTot!=null?` | K/Z: <b class="${signCls(pnlTot)}">%${fmt(pnlTot,1)}</b>`:"") +
+      ` <span class=muted>(fiyatlar son taramadan)</span>`
+    : "Henüz pozisyon yok — aşağıdan ekle.";
+}
+async function loadPortfolio(){
+  try{
+    const data = await readJson(pfPath());
+    S.positions = (data && Array.isArray(data.positions)) ? data.positions : [];
+    renderPortfolio();
+  }catch(e){ msg(e.message,"err"); }
+}
+function addPosition(){
+  const sym=document.getElementById("pfSym").value.trim().toUpperCase().replace(".IS","");
+  const qty=Number(document.getElementById("pfQty").value);
+  const cost=Number(document.getElementById("pfCost").value);
+  if(!sym||!Number.isFinite(qty)||qty<=0||!Number.isFinite(cost)||cost<=0){
+    msg("Sembol, adet ve maliyeti doldurun.","err"); return; }
+  const existing=S.positions.find(p=>p.symbol===sym);
+  if(existing){ existing.quantity=qty; existing.avg_cost=cost; }
+  else S.positions.push({symbol:sym, quantity:qty, avg_cost:cost});
+  for (const id of ["pfSym","pfQty","pfCost"]) document.getElementById(id).value="";
+  renderPortfolio();
+  msg("Eklendi — repo'ya işlemek için Kaydet'e bas.");
+}
+function delPosition(i){ S.positions.splice(i,1); renderPortfolio();
+  msg("Silindi — repo'ya işlemek için Kaydet'e bas."); }
+async function savePortfolio(){
+  try{
+    await writeJson(pfPath(), {positions:S.positions},
+      `webapp: ${slugify(S.profile)} portfolio update`);
+    msg("Portföy repo'ya kaydedildi ✓");
+  }catch(e){ msg(e.message,"err"); }
+}
+
+function saveSetup(){
+  const t=document.getElementById("inToken").value.trim();
+  const r=document.getElementById("inRepo").value.trim();
+  const p=document.getElementById("inProfile").value.trim();
+  if(!t||!r||!p){ msg("Üç alanı da doldurun.","err"); return; }
+  if(!slugify(p)){ msg("Profil adı geçersiz.","err"); return; }
+  S.token=t; S.repo=r; S.profile=p;
+  localStorage.setItem(LS.token,t); localStorage.setItem(LS.repo,r);
+  localStorage.setItem(LS.profile,p);
+  boot();
+}
+function resetSetup(){
+  for (const k of Object.values(LS)) localStorage.removeItem(k);
+  location.reload();
+}
+async function boot(){
+  if(!S.token||!S.repo||!S.profile){ show("setup"); return; }
+  document.getElementById("nav").classList.remove("hide");
+  const pill=document.getElementById("profilePill");
+  pill.textContent=slugify(S.profile); pill.classList.remove("hide");
+  document.getElementById("headSub").textContent=S.repo;
+  show("adaylar");
+  await loadAdaylar();   // fiyat sözlüğü portföyden ÖNCE dolmalı
+  loadKarne();
+  loadPortfolio();
+}
+boot();
+</script>
+</body>
+</html>
