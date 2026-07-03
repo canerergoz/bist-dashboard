@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  BIST Assistant — Telefon Dashboard (P3.14, faz 1)
+  BIST Assistant - Telefon Dashboard (P3.14)
 
   VERİ İÇERMEYEN statik kabuk: tüm veri, kullanıcının kendi GitHub fine-grained
   token'ıyla tarayıcıdan GitHub Contents API üzerinden okunur/yazılır. Sunucu
@@ -17,32 +17,37 @@
 <title>BIST Assistant</title>
 <style>
   :root{--bg:#f5f6f7;--card:#ffffff;--ink:#22303c;--sub:#6b7f94;--line:#e0e4e8;
-        --pos:#2f6f44;--neg:#8b3a3a;--acc:#2980b9;--warn:#b8860b;}
+        --pos:#2f6f44;--neg:#8b3a3a;--acc:#2980b9;--warn:#b8860b;--soft:#eef3f7;}
   *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;}
-  body{background:var(--bg);color:var(--ink);padding-bottom:64px;}
-  header{padding:14px 16px 8px;background:var(--card);border-bottom:1px solid var(--line);
+  body{background:var(--bg);color:var(--ink);}
+  header{padding:14px 16px 10px;background:var(--card);border-bottom:1px solid var(--line);
          position:sticky;top:0;z-index:5;}
-  header h1{font-size:17px;font-weight:700;}
-  header .sub{font-size:11px;color:var(--sub);}
+  header h1{font-size:17px;font-weight:700;letter-spacing:0;}
+  header .sub{font-size:11px;color:var(--sub);margin-top:2px;word-break:break-word;}
   main{padding:12px;max-width:720px;margin:0 auto;}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
         padding:12px;margin-bottom:12px;}
-  .card h2{font-size:14px;margin-bottom:8px;}
-  table{width:100%;border-collapse:collapse;font-size:13px;}
+  .card h2{font-size:14px;margin-bottom:8px;letter-spacing:0;}
+  .table-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:420px;}
   th{color:var(--sub);font-weight:600;text-align:left;padding:6px 4px;
-     border-bottom:1px solid var(--line);font-size:11px;}
-  td{padding:7px 4px;border-bottom:1px solid var(--line);}
+     border-bottom:1px solid var(--line);font-size:11px;white-space:nowrap;}
+  td{padding:7px 4px;border-bottom:1px solid var(--line);vertical-align:top;}
   tr:last-child td{border-bottom:none;}
-  .num{text-align:right;font-variant-numeric:tabular-nums;}
+  .clickable{cursor:pointer;}
+  .clickable:active{background:#f0f4f7;}
+  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
   .pos{color:var(--pos);font-weight:600;} .neg{color:var(--neg);font-weight:600;}
   .muted{color:var(--sub);font-size:11px;}
-  .pill{display:inline-block;background:#eef3f7;color:var(--acc);border-radius:10px;
-        padding:1px 8px;font-size:10px;font-weight:700;margin-left:6px;}
-  nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);
-      border-top:1px solid var(--line);z-index:10;}
-  nav button{flex:1;padding:11px 0 9px;border:none;background:none;font-size:12px;
-             color:var(--sub);cursor:pointer;}
-  nav button.on{color:var(--acc);font-weight:700;border-top:2px solid var(--acc);}
+  .cell-sub{display:block;color:var(--sub);font-size:10px;margin-top:2px;white-space:nowrap;}
+  .pill{display:inline-block;background:var(--soft);color:var(--acc);border-radius:10px;
+        padding:1px 8px;font-size:10px;font-weight:700;margin-left:6px;vertical-align:middle;}
+  .pill.warn{color:var(--warn);background:#fff5dc;}
+  nav{display:flex;gap:6px;margin-top:10px;padding-top:8px;border-top:1px solid var(--line);
+      overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  nav button{flex:1 0 auto;min-width:62px;padding:8px 6px;border:1px solid transparent;
+             border-radius:8px;background:none;font-size:12px;color:var(--sub);cursor:pointer;}
+  nav button.on{color:var(--acc);font-weight:700;background:var(--soft);border-color:#d8e6f0;}
   input,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;
         font-size:14px;margin:4px 0 10px;background:#fff;color:var(--ink);}
   label{font-size:12px;color:var(--sub);font-weight:600;}
@@ -51,23 +56,52 @@
   .btn.gray{background:#e9ecef;color:var(--ink);}
   .btn.small{width:auto;display:inline-block;padding:7px 12px;font-size:12px;}
   .row{display:flex;gap:8px;} .row>*{flex:1;}
+  .form-grid{display:grid;grid-template-columns:1.1fr .75fr .9fr;gap:8px;margin-top:10px;}
+  .form-grid input{margin:0;}
   .msg{padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:10px;display:none;}
   .msg.ok{background:#e7f3ea;color:var(--pos);display:block;}
   .msg.err{background:#f7e9e9;color:var(--neg);display:block;}
-  .disclaimer{font-size:10px;color:var(--sub);text-align:center;padding:10px 16px 4px;}
+  .disclaimer{font-size:10px;color:var(--sub);text-align:center;padding:10px 16px 18px;}
   .del{color:var(--neg);background:none;border:none;font-size:16px;cursor:pointer;padding:0 6px;}
-  .hide{display:none;}
+  .portfolio-block{border-top:1px solid var(--line);padding-top:10px;margin-top:10px;}
+  .portfolio-block:first-of-type{border-top:none;padding-top:0;margin-top:0;}
+  .portfolio-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:6px;}
+  .portfolio-head h3{font-size:13px;letter-spacing:0;}
+  .metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0 10px;}
+  .metric{border:1px solid var(--line);border-radius:8px;padding:8px;background:#fbfcfd;}
+  .metric .label{font-size:10px;color:var(--sub);font-weight:700;}
+  .metric .value{font-size:16px;font-weight:700;margin-top:2px;}
+  .detail-grid{display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px;}
+  .detail-row{display:grid;grid-template-columns:minmax(96px,.9fr) minmax(0,1.3fr);gap:8px;
+              padding:7px 0;border-bottom:1px solid var(--line);font-size:13px;}
+  .detail-row:last-child{border-bottom:none;}
+  .detail-row .k{color:var(--sub);font-size:11px;font-weight:700;}
+  .detail-note{font-size:12px;line-height:1.35;color:var(--ink);margin-top:8px;}
+  @media (max-width:420px){
+    main{padding:10px;}
+    .card{padding:10px;}
+    table{font-size:12px;min-width:390px;}
+    th,td{padding-left:3px;padding-right:3px;}
+    .form-grid{grid-template-columns:1fr;}
+    .metric-grid{grid-template-columns:1fr 1fr;}
+  }
+  .hide{display:none!important;}
 </style>
 </head>
 <body>
 <header>
   <h1>BIST Assistant <span id="profilePill" class="pill hide"></span></h1>
   <div class="sub" id="headSub">kurulum bekleniyor</div>
+  <nav id="nav" class="hide">
+    <button id="nav-adaylar" onclick="show('adaylar')">Adaylar</button>
+    <button id="nav-karne" onclick="show('karne')">Karne</button>
+    <button id="nav-portfoy" onclick="show('portfoy')">Portföy</button>
+    <button id="nav-detay" onclick="show('detay')">Detay</button>
+  </nav>
 </header>
 <main>
   <div id="msg" class="msg"></div>
 
-  <!-- KURULUM -->
   <section id="view-setup">
     <div class="card">
       <h2>Kurulum</h2>
@@ -79,84 +113,110 @@
       <input id="inToken" type="password" placeholder="github_pat_...">
       <label>Repo (sahip/ad)</label>
       <input id="inRepo" placeholder="kullanici/assistant">
-      <label>Profil adın (portföy dosyanın adı; örn. isim)</label>
-      <input id="inProfile" placeholder="örn. ali">
+      <label>Profil adın (portföy dosyanın adı; örn. caner)</label>
+      <input id="inProfile" placeholder="örn. caner">
+      <label>İzlenecek diğer profil(ler) (opsiyonel; örn. anne)</label>
+      <input id="inRelated" placeholder="örn. anne">
       <button class="btn" onclick="saveSetup()">Kaydet ve Bağlan</button>
     </div>
   </section>
 
-  <!-- ADAYLAR -->
   <section id="view-adaylar" class="hide">
     <div class="card">
       <h2>Günün adayları <span id="adayMode" class="pill hide"></span></h2>
-      <div class="muted" id="adayMeta">yükleniyor…</div>
-      <table id="adayTable"></table>
+      <div class="muted" id="adayMeta">yükleniyor...</div>
+      <div class="table-wrap"><table id="adayTable"></table></div>
     </div>
   </section>
 
-  <!-- KARNE -->
   <section id="view-karne" class="hide">
     <div class="card">
       <h2>Ölçüm karnesi</h2>
-      <div class="muted" id="karneMeta">yükleniyor…</div>
-      <table id="karneTable"></table>
+      <div class="muted" id="karneMeta">yükleniyor...</div>
+      <div class="table-wrap"><table id="karneTable"></table></div>
       <p class="muted" style="margin-top:8px">
         "Göreli" = XU100 endeksine kıyasla. Negatif göreli değer, önerilerin o
-        ufukta endeksin gerisinde kaldığını söyler — sistem bunu saklamaz.
+        ufukta endeksin gerisinde kaldığını söyler.
       </p>
     </div>
   </section>
 
-  <!-- PORTFÖY -->
   <section id="view-portfoy" class="hide">
     <div class="card">
-      <h2>Portföyüm</h2>
-      <div class="muted" id="pfMeta"></div>
-      <table id="pfTable"></table>
-      <div class="row" style="margin-top:10px">
-        <input id="pfSym" placeholder="Sembol (örn. BIMAS)" style="margin:0">
-        <input id="pfQty" type="number" inputmode="decimal" placeholder="Adet" style="margin:0">
-        <input id="pfCost" type="number" inputmode="decimal" placeholder="Maliyet" style="margin:0">
+      <h2>Portföy</h2>
+      <div id="pfWrap"></div>
+      <div class="form-grid">
+        <input id="pfSym" placeholder="Sembol (örn. BIMAS)" oninput="updatePriceHint()">
+        <input id="pfQty" type="number" inputmode="decimal" placeholder="Adet">
+        <input id="pfCost" type="number" inputmode="decimal" placeholder="Maliyet">
       </div>
-      <div class="row" style="margin-top:8px">
+      <div class="muted" id="pfPriceHint" style="margin:6px 0 10px"></div>
+      <div class="row">
         <button class="btn gray" onclick="addPosition()">Ekle</button>
-        <button class="btn" onclick="savePortfolio()">Kaydet (repo'ya)</button>
+        <button class="btn" onclick="savePortfolio()">Kaydet</button>
       </div>
     </div>
   </section>
-</main>
 
-<nav id="nav" class="hide">
-  <button id="nav-adaylar" onclick="show('adaylar')">Adaylar</button>
-  <button id="nav-karne" onclick="show('karne')">Karne</button>
-  <button id="nav-portfoy" onclick="show('portfoy')">Portföy</button>
-  <button onclick="resetSetup()">Çıkış</button>
-</nav>
+  <section id="view-detay" class="hide">
+    <div class="card">
+      <h2>Detay</h2>
+      <div class="row">
+        <input id="detailSym" placeholder="Sembol (örn. THYAO)" style="margin:0" oninput="renderDetail()">
+        <button class="btn small" onclick="renderDetail()">Aç</button>
+      </div>
+      <div id="detailOut" style="margin-top:10px"></div>
+    </div>
+  </section>
+</main>
 <div class="disclaimer">Bu uygulama kişisel bir takip aracıdır; yatırım tavsiyesi değildir.</div>
 
 <script>
 "use strict";
-const LS = { token:"bist_token", repo:"bist_repo", profile:"bist_profile" };
+const LS = {
+  token:"bist_token",
+  repo:"bist_repo",
+  profile:"bist_profile",
+  related:"bist_related_profiles",
+};
 const S = {
   token: localStorage.getItem(LS.token) || "",
-  repo:  localStorage.getItem(LS.repo) || "",
+  repo: localStorage.getItem(LS.repo) || "",
   profile: localStorage.getItem(LS.profile) || "",
-  prices: {},          // sembol -> Fiyat (artifact'ten)
-  positions: [],       // aktif profil pozisyonları
-  sha: null,           // profil dosyasının mevcut sha'sı (PUT için)
+  relatedProfiles: localStorage.getItem(LS.related) || "",
+  prices: {},
+  candidateRows: [],
+  rowBySymbol: {},
+  positions: [],
+  relatedPortfolios: [],
+  artifactInfo: {},
 };
 
 function msg(text, kind){ const el=document.getElementById("msg");
   el.textContent=text; el.className="msg "+(kind||"ok");
   if(kind!=="err") setTimeout(()=>{el.className="msg";}, 4000); }
 
+function esc(value){
+  return String(value ?? "").replace(/[&<>"']/g, ch => (
+    {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]
+  ));
+}
 function slugify(name){
   const map={"ç":"c","ğ":"g","ı":"i","ö":"o","ş":"s","ü":"u"};
   return String(name||"").toLowerCase().trim()
     .replace(/[çğıöşü]/g, ch=>map[ch])
     .replace(/[^a-z0-9_-]+/g,"-").replace(/^-+|-+$/g,"");
 }
-
+function normSymbol(value){ return String(value||"").trim().toUpperCase().replace(".IS",""); }
+function parseRelatedProfiles(raw){
+  const active=slugify(S.profile);
+  const out=[];
+  for(const part of String(raw||"").split(",")){
+    const slug=slugify(part);
+    if(slug && slug!==active && !out.includes(slug)) out.push(slug);
+  }
+  return out;
+}
 function apiHeaders(extra){
   return Object.assign({
     "Authorization": "Bearer " + S.token,
@@ -193,40 +253,205 @@ async function writeJson(path, obj, message){
 }
 
 function show(view){
-  for (const v of ["setup","adaylar","karne","portfoy"])
+  for (const v of ["setup","adaylar","karne","portfoy","detay"])
     document.getElementById("view-"+v).classList.toggle("hide", v!==view);
-  for (const v of ["adaylar","karne","portfoy"]){
+  for (const v of ["adaylar","karne","portfoy","detay"]){
     const b=document.getElementById("nav-"+v); if(b) b.classList.toggle("on", v===view);
   }
+  if(view==="detay") renderDetail();
 }
 function fmt(x, d){ const n=Number(x);
   return Number.isFinite(n) ? n.toLocaleString("tr-TR",{minimumFractionDigits:d??2,maximumFractionDigits:d??2}) : "-"; }
+function fmtInt(x){ const n=Number(x); return Number.isFinite(n) ? n.toLocaleString("tr-TR",{maximumFractionDigits:0}) : "-"; }
 function signCls(x){ const n=Number(x); return !Number.isFinite(n)?"":(n>0?"pos":(n<0?"neg":"")); }
+function num(value){
+  if(value===null || value===undefined || typeof value==="boolean") return null;
+  const n=Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+function rowsFromArtifact(payload){
+  if(Array.isArray(payload)) return payload;
+  if(!payload || typeof payload!=="object") return [];
+  for(const key of ["ordered_candidates","data","rows","scan_results","results"]){
+    if(Array.isArray(payload[key])) return payload[key];
+  }
+  return [];
+}
 
-async function loadAdaylar(){
+function percentileRanks(values){
+  const ranks = values.map(()=>50);
+  const present = values.map((value,index)=>({value,index}))
+    .filter(item=>item.value!==null)
+    .sort((a,b)=>a.value-b.value || a.index-b.index);
+  const n=present.length;
+  if(n===0) return ranks;
+  if(n===1){ ranks[present[0].index]=50; return ranks; }
+  let pos=0;
+  while(pos<n){
+    let end=pos;
+    while(end+1<n && present[end+1].value===present[pos].value) end++;
+    const percentile = 100 * ((pos+end)/2) / (n-1);
+    for(let i=pos;i<=end;i++) ranks[present[i].index]=Math.round(percentile*10000)/10000;
+    pos=end+1;
+  }
+  return ranks;
+}
+function attachComputedV3(rows){
+  if(rows.some(r=>num(r["V3 Skor"])!==null && num(r["V3 Sıra"])!==null)) return false;
+  const valid = rows.map((row,index)=>({row,index,symbol:normSymbol(row["Hisse"]||row["Kullanılan Güncel Sembol"])}))
+    .filter(item=>item.symbol);
+  if(!valid.length) return false;
+  const traded = valid.map(item=>{
+    const volume=num(item.row["Anlık Hacim"]);
+    const price=num(item.row["Fiyat"]) ?? num(item.row["Kapanış"]);
+    return volume!==null && price!==null && price>0 ? volume*price : null;
+  });
+  const known = traded.filter(v=>v!==null).sort((a,b)=>a-b);
+  let liquidityCut=null;
+  if(known.length>=30){
+    const cutIndex = Math.floor(known.length * 0.10);
+    liquidityCut = known[Math.min(cutIndex, known.length-1)];
+  }
+  const eligible=[];
+  valid.forEach((item,idx)=>{
+    const value=traded[idx];
+    if(liquidityCut!==null && value!==null && value<liquidityCut){
+      rows[item.index]["V3 Elenme Nedeni"]="likidite_taban";
+    }else{
+      eligible.push(item);
+    }
+  });
+  const factorFields = {
+    "MOMENTUM_RS":"rs_20",
+    "VALUE":"Değerleme Skoru",
+    "QUALITY":"Temel Kalite Skoru",
+    "DATA_CONFIDENCE":"Güven Puanı",
+  };
+  const weights = {"MOMENTUM_RS":0.30,"VALUE":0.25,"QUALITY":0.25,"DATA_CONFIDENCE":0.20};
+  const ranks = {};
+  for(const family of Object.keys(factorFields)){
+    ranks[family]=percentileRanks(eligible.map(item=>num(item.row[factorFields[family]])));
+  }
+  const scored = eligible.map((item,pos)=>{
+    let score=0;
+    for(const family of Object.keys(weights)) score += weights[family]*ranks[family][pos];
+    return {item,score:Math.round(score*10000)/10000,sector:String(item.row["Sektör"]||"Bilinmiyor").trim()||"Bilinmiyor"};
+  });
+  const order = scored.slice().sort((a,b)=>b.score-a.score || a.item.symbol.localeCompare(b.item.symbol));
+  order.forEach((rec,idx)=>{
+    const row=rows[rec.item.index];
+    row["V3 Skor"]=rec.score;
+    row["V3 Sıra"]=idx+1;
+    row.__computedV3=true;
+  });
+  const sectorCounts={};
+  let selectionRank=0;
+  for(const rec of order){
+    const row=rows[rec.item.index];
+    if((sectorCounts[rec.sector]||0)>=2){ row["V3 Seçim Sırası"]=null; continue; }
+    if(selectionRank<5){
+      selectionRank++;
+      sectorCounts[rec.sector]=(sectorCounts[rec.sector]||0)+1;
+      row["V3 Seçim Sırası"]=selectionRank;
+    }else{
+      row["V3 Seçim Sırası"]=null;
+    }
+  }
+  return true;
+}
+
+function quoteUpsert(symbol, price, source, asOf, priority){
+  const sym=normSymbol(symbol);
+  const n=num(price);
+  if(!sym || n===null || n<=0) return;
+  const current=S.prices[sym];
+  const incoming={price:n, source, asOf:asOf||"", priority:priority||0};
+  if(!current || incoming.priority>current.priority ||
+     (incoming.priority===current.priority && incoming.asOf>current.asOf)){
+    S.prices[sym]=incoming;
+  }
+}
+function quoteFromRow(row, artifact){
+  const sym=normSymbol(row["Hisse"]||row["Kullanılan Güncel Sembol"]);
+  const asOf=String(row["Son Güncelleme Saati"] || artifact.generated_at || artifact.selected_at || "");
+  if(num(row["Fiyat"])!==null) quoteUpsert(sym,row["Fiyat"],"piyasa",asOf,3);
+  else if(num(row["Kapanış"])!==null) quoteUpsert(sym,row["Kapanış"],"kapanış",asOf,2);
+}
+function mergeTrackingPrices(payload){
+  const records = Array.isArray(payload) ? payload : ((payload && payload.records) || []);
+  for(const rec of records){
+    const snap=rec.feature_snapshot || {};
+    const sym=normSymbol(rec.symbol || snap.symbol || rec["Hisse"]);
+    const asOf=String(rec.selected_at || snap.picked_at || rec.artifact_selected_at || rec.published_at || "");
+    quoteUpsert(sym, snap.close_price, "tracking kapanış", asOf, 1);
+    quoteUpsert(sym, rec.exit_price, "son çıkış", asOf, 1);
+    quoteUpsert(sym, rec.entry_price, "giriş kapanış", asOf, 1);
+  }
+}
+function priceFor(symbol){ return S.prices[normSymbol(symbol)] || null; }
+
+async function loadMarketData(){
+  const art = await readJson("data/latest_core_candidates.json");
+  if(!art) throw new Error("data/latest_core_candidates.json bulunamadı.");
+  const rows = rowsFromArtifact(art).map(row=>Object.assign({}, row));
+  const computed = attachComputedV3(rows);
+  S.candidateRows = rows;
+  S.rowBySymbol = {};
+  S.prices = {};
+  for(const row of rows){
+    const sym=normSymbol(row["Hisse"]||row["Kullanılan Güncel Sembol"]);
+    if(sym) S.rowBySymbol[sym]=row;
+    quoteFromRow(row, art);
+  }
+  S.artifactInfo = {
+    generated_at: art.generated_at || "",
+    selected_at: art.selected_at || "",
+    count: rows.length,
+    mode: rows.length ? String(rows[0]["Scoring Mode"]||"") : "",
+    source: rows.length ? String(rows[0]["Selection Source"]||"") : "",
+    computedV3: computed,
+  };
+  const tracking = await readJson("data/morning_pick_tracking.json");
+  if(tracking) mergeTrackingPrices(tracking);
+}
+function candidateModeLabel(){
+  const info=S.artifactInfo || {};
+  if(info.mode==="V3_LIVE" || info.source==="V3") return "V3_LIVE";
+  if(info.computedV3) return "V3_UI_CALC";
+  if(S.candidateRows.some(r=>num(r["V3 Skor"])!==null)) return "V3_VIEW";
+  return info.mode || "";
+}
+function candidateRowsForDisplay(){
+  return S.candidateRows.slice().sort((a,b)=>{
+    const av3=num(a["V3 Sıra"]), bv3=num(b["V3 Sıra"]);
+    if(av3!==null || bv3!==null) return (av3 ?? 999999) - (bv3 ?? 999999);
+    const av2=num(a["V2 Sıra"]), bv2=num(b["V2 Sıra"]);
+    if(av2!==null || bv2!==null) return (av2 ?? 999999) - (bv2 ?? 999999);
+    return (num(a["Legacy Sıra"]) ?? 999999) - (num(b["Legacy Sıra"]) ?? 999999);
+  });
+}
+function loadAdaylar(){
   const el=document.getElementById("adayTable"), meta=document.getElementById("adayMeta");
-  try{
-    const art = await readJson("data/latest_core_candidates.json");
-    if(!art){ meta.textContent="Artifact bulunamadı."; return; }
-    const rows = art.ordered_candidates || [];
-    S.prices = {};
-    for (const r of rows){ const sym=String(r["Hisse"]||"").replace(".IS","");
-      if (sym && r["Fiyat"]!=null) S.prices[sym]=Number(r["Fiyat"]); }
-    const mode = rows.length ? (rows[0]["Scoring Mode"]||"") : "";
-    const pill=document.getElementById("adayMode");
-    pill.textContent=mode; pill.classList.toggle("hide", !mode);
-    meta.textContent = `üretim: ${String(art.generated_at||"").slice(0,16).replace("T"," ")} | ${rows.length} aday`;
-    let html = "<tr><th>#</th><th>Hisse</th><th>Şirket</th><th class=num>Fiyat</th><th class=num>Gün%</th><th class=num>Skor</th></tr>";
-    rows.slice(0,15).forEach((r,i)=>{
-      const chg=r["Günlük Değişim %"];
-      html += `<tr><td>${i+1}</td><td><b>${String(r["Hisse"]||"").replace(".IS","")}</b></td>
-        <td class=muted>${(r["Şirket Adı"]||"").slice(0,18)}</td>
-        <td class=num>${fmt(r["Fiyat"])}</td>
-        <td class="num ${signCls(chg)}">${fmt(chg,1)}</td>
-        <td class=num>${fmt(r["V3 Skor"] ?? r["Karar Skoru"],1)}</td></tr>`;
-    });
-    el.innerHTML = html;
-  }catch(e){ meta.textContent=""; msg(e.message,"err"); }
+  const rows=candidateRowsForDisplay();
+  const mode=candidateModeLabel();
+  const pill=document.getElementById("adayMode");
+  pill.textContent=mode; pill.classList.toggle("hide", !mode);
+  pill.classList.toggle("warn", mode==="V3_UI_CALC" || mode==="V3_VIEW");
+  if(!rows.length){ meta.textContent="Aday bulunamadı."; el.innerHTML=""; return; }
+  const stamp=String(S.artifactInfo.generated_at||S.artifactInfo.selected_at||"").slice(0,16).replace("T"," ");
+  const artifactMode=S.artifactInfo.mode ? ` | artifact: ${S.artifactInfo.mode}` : "";
+  meta.textContent = `üretim: ${stamp || "?"} | ${rows.length} aday | sıralama: V3${artifactMode}`;
+  let html = "<tr><th>#</th><th>Hisse</th><th>Şirket</th><th class=num>Fiyat</th><th class=num>Gün%</th><th class=num>V3</th></tr>";
+  rows.slice(0,15).forEach((r,i)=>{
+    const chg=r["Günlük Değişim %"];
+    const sym=normSymbol(r["Hisse"]);
+    html += `<tr class="clickable" onclick="selectDetail('${sym}')"><td>${i+1}</td><td><b>${esc(sym)}</b></td>
+      <td class=muted>${esc(String(r["Şirket Adı"]||"").slice(0,20))}</td>
+      <td class=num>${fmt(r["Fiyat"] ?? r["Kapanış"])}</td>
+      <td class="num ${signCls(chg)}">${fmt(chg,1)}</td>
+      <td class=num>${fmt(r["V3 Skor"] ?? r["V2 Skor"] ?? r["Karar Skoru"],1)}</td></tr>`;
+  });
+  el.innerHTML = html;
 }
 
 async function loadKarne(){
@@ -249,86 +474,187 @@ async function loadKarne(){
   }catch(e){ meta.textContent=""; msg(e.message,"err"); }
 }
 
-function pfPath(){ return `webapp/portfolios/${slugify(S.profile)}.json`; }
-
-function renderPortfolio(){
-  const el=document.getElementById("pfTable"), meta=document.getElementById("pfMeta");
-  let total=0, cost=0;
-  let html="<tr><th>Hisse</th><th class=num>Adet</th><th class=num>Maliyet</th><th class=num>Fiyat</th><th class=num>K/Z %</th><th></th></tr>";
-  S.positions.forEach((p,i)=>{
-    const price=S.prices[String(p.symbol||"").toUpperCase()] ?? null;
-    const value=(price!=null&&p.quantity)?price*p.quantity:null;
-    const basis=(p.avg_cost&&p.quantity)?p.avg_cost*p.quantity:null;
-    if(value!=null) total+=value; if(basis!=null) cost+=basis;
-    const pnl=(price!=null&&p.avg_cost)?((price/p.avg_cost-1)*100):null;
-    html+=`<tr><td><b>${p.symbol}</b></td><td class=num>${fmt(p.quantity,0)}</td>
-      <td class=num>${fmt(p.avg_cost)}</td><td class=num>${price!=null?fmt(price):"-"}</td>
-      <td class="num ${signCls(pnl)}">${pnl!=null?fmt(pnl,1):"-"}</td>
-      <td><button class=del onclick="delPosition(${i})">×</button></td></tr>`;
+function pfPath(slug){ return `webapp/portfolios/${slugify(slug||S.profile)}.json`; }
+function portfolioTotals(positions){
+  let total=0, cost=0, priced=0;
+  for(const p of positions){
+    const quote=priceFor(p.symbol);
+    const price=quote ? quote.price : null;
+    const qty=num(p.quantity), avg=num(p.avg_cost);
+    if(price!==null && qty!==null){ total += price*qty; priced++; }
+    if(avg!==null && qty!==null) cost += avg*qty;
+  }
+  return {total,cost,priced,pnl: cost>0 ? ((total/cost-1)*100) : null};
+}
+function renderPortfolioTable(positions, editable){
+  if(!positions.length) return `<div class="muted">Henüz pozisyon yok.</div>`;
+  let html='<div class="table-wrap"><table><tr><th>Hisse</th><th class=num>Adet</th><th class=num>Fiyat</th><th class=num>Değer</th><th class=num>K/Z</th>';
+  html += editable ? "<th></th></tr>" : "</tr>";
+  positions.forEach((p,i)=>{
+    const sym=normSymbol(p.symbol);
+    const quote=priceFor(sym);
+    const price=quote ? quote.price : null;
+    const qty=num(p.quantity), avg=num(p.avg_cost);
+    const value=(price!==null && qty!==null)?price*qty:null;
+    const pnl=(price!==null && avg!==null)?((price/avg-1)*100):null;
+    html+=`<tr><td><b>${esc(sym)}</b><span class=cell-sub>M: ${fmt(avg)}</span></td>
+      <td class=num>${fmt(qty,0)}</td>
+      <td class=num>${price!==null?fmt(price):"-"}<span class=cell-sub>${quote?esc(quote.source):"fiyat yok"}</span></td>
+      <td class=num>${value!==null?fmt(value):"-"}</td>
+      <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
+    if(editable) html+=`<td><button class=del onclick="delPosition(${i})">x</button></td>`;
+    html+="</tr>";
   });
-  el.innerHTML=html;
-  const pnlTot = cost>0 ? ((total/cost-1)*100) : null;
-  meta.innerHTML = S.positions.length
-    ? `Toplam değer: <b>${fmt(total)} TL</b>` +
-      (pnlTot!=null?` | K/Z: <b class="${signCls(pnlTot)}">%${fmt(pnlTot,1)}</b>`:"") +
-      ` <span class=muted>(fiyatlar son taramadan)</span>`
-    : "Henüz pozisyon yok — aşağıdan ekle.";
+  return html+"</table></div>";
+}
+function renderPortfolioGroup(title, positions, editable){
+  const totals=portfolioTotals(positions);
+  const pnlText=totals.pnl!==null ? ` | K/Z: <b class="${signCls(totals.pnl)}">%${fmt(totals.pnl,1)}</b>` : "";
+  const pricedText=positions.length ? ` | fiyatlı: ${totals.priced}/${positions.length}` : "";
+  return `<div class="portfolio-block">
+    <div class="portfolio-head"><h3>${esc(title)}</h3><div class="muted">Toplam: <b>${fmt(totals.total)} TL</b>${pnlText}${pricedText}</div></div>
+    ${renderPortfolioTable(positions, editable)}
+  </div>`;
+}
+function renderPortfolio(){
+  const wrap=document.getElementById("pfWrap");
+  const activeTitle=`${slugify(S.profile)} portföyü`;
+  let html=renderPortfolioGroup(activeTitle, S.positions, true);
+  for(const item of S.relatedPortfolios){
+    html += renderPortfolioGroup(`${item.slug} portföyü`, item.positions, false);
+  }
+  if(!S.relatedPortfolios.length && parseRelatedProfiles(S.relatedProfiles).length){
+    html += `<div class="portfolio-block"><div class="muted">İzlenen profil dosyası henüz yok.</div></div>`;
+  }
+  wrap.innerHTML=html;
+  updatePriceHint();
 }
 async function loadPortfolio(){
   try{
-    const data = await readJson(pfPath());
+    const data = await readJson(pfPath(S.profile));
     S.positions = (data && Array.isArray(data.positions)) ? data.positions : [];
+    S.relatedPortfolios = [];
+    for(const slug of parseRelatedProfiles(S.relatedProfiles)){
+      const rel = await readJson(pfPath(slug));
+      S.relatedPortfolios.push({slug, positions:(rel && Array.isArray(rel.positions)) ? rel.positions : []});
+    }
     renderPortfolio();
   }catch(e){ msg(e.message,"err"); }
 }
+function updatePriceHint(){
+  const el=document.getElementById("pfPriceHint");
+  if(!el) return;
+  const sym=normSymbol(document.getElementById("pfSym").value);
+  if(!sym){ el.textContent=""; return; }
+  const quote=priceFor(sym);
+  el.textContent = quote ? `${sym} son fiyat: ${fmt(quote.price)} TL (${quote.source})` : `${sym} için repo verisinde fiyat bulunamadı.`;
+}
 function addPosition(){
-  const sym=document.getElementById("pfSym").value.trim().toUpperCase().replace(".IS","");
+  const sym=normSymbol(document.getElementById("pfSym").value);
   const qty=Number(document.getElementById("pfQty").value);
   const cost=Number(document.getElementById("pfCost").value);
   if(!sym||!Number.isFinite(qty)||qty<=0||!Number.isFinite(cost)||cost<=0){
     msg("Sembol, adet ve maliyeti doldurun.","err"); return; }
-  const existing=S.positions.find(p=>p.symbol===sym);
-  if(existing){ existing.quantity=qty; existing.avg_cost=cost; }
+  const existing=S.positions.find(p=>normSymbol(p.symbol)===sym);
+  if(existing){ existing.symbol=sym; existing.quantity=qty; existing.avg_cost=cost; }
   else S.positions.push({symbol:sym, quantity:qty, avg_cost:cost});
   for (const id of ["pfSym","pfQty","pfCost"]) document.getElementById(id).value="";
   renderPortfolio();
-  msg("Eklendi — repo'ya işlemek için Kaydet'e bas.");
+  msg("Eklendi. Repo'ya işlemek için Kaydet'e bas.");
 }
 function delPosition(i){ S.positions.splice(i,1); renderPortfolio();
-  msg("Silindi — repo'ya işlemek için Kaydet'e bas."); }
+  msg("Silindi. Repo'ya işlemek için Kaydet'e bas."); }
 async function savePortfolio(){
   try{
-    await writeJson(pfPath(), {positions:S.positions},
+    await writeJson(pfPath(S.profile), {positions:S.positions},
       `webapp: ${slugify(S.profile)} portfolio update`);
-    msg("Portföy repo'ya kaydedildi ✓");
+    msg("Portföy repo'ya kaydedildi.");
   }catch(e){ msg(e.message,"err"); }
+}
+
+function detailField(row, key, fallback="-"){ const value=row ? row[key] : null; return value===null || value===undefined || value==="" ? fallback : value; }
+function renderDetailRow(label, value){
+  return `<div class="detail-row"><div class="k">${esc(label)}</div><div>${esc(value)}</div></div>`;
+}
+function selectDetail(symbol){
+  document.getElementById("detailSym").value=normSymbol(symbol);
+  show("detay");
+}
+function renderDetail(){
+  const out=document.getElementById("detailOut");
+  if(!out) return;
+  let sym=normSymbol(document.getElementById("detailSym").value);
+  if(!sym && S.candidateRows.length) sym=normSymbol(candidateRowsForDisplay()[0]["Hisse"]);
+  if(!sym){ out.innerHTML='<div class="muted">Detay için sembol gir.</div>'; return; }
+  const row=S.rowBySymbol[sym];
+  if(!row){ out.innerHTML=`<div class="muted">${esc(sym)} için aday artifact'inde detay yok.</div>`; return; }
+  const quote=priceFor(sym);
+  const chg=row["Günlük Değişim %"];
+  let html=`<div><b>${esc(sym)}</b> <span class="muted">${esc(detailField(row,"Şirket Adı",""))}</span>
+    <span class="pill">${esc(candidateModeLabel())}</span></div>`;
+  html += `<div class="metric-grid">
+    <div class="metric"><div class="label">Fiyat</div><div class="value">${fmt(quote?quote.price:(row["Fiyat"] ?? row["Kapanış"]))}</div><div class="muted">${quote?esc(quote.source):"artifact"}</div></div>
+    <div class="metric"><div class="label">Günlük</div><div class="value ${signCls(chg)}">%${fmt(chg,1)}</div><div class="muted">hafta %${fmt(row["Haftalık Değişim %"],1)}</div></div>
+    <div class="metric"><div class="label">V3 Sıra</div><div class="value">${fmtInt(row["V3 Sıra"])}</div><div class="muted">V2 sıra ${fmtInt(row["V2 Sıra"])}</div></div>
+    <div class="metric"><div class="label">V3 Skor</div><div class="value">${fmt(row["V3 Skor"],1)}</div><div class="muted">karar ${fmt(row["Karar Skoru"],0)}</div></div>
+  </div>`;
+  html += '<div class="detail-grid">';
+  [
+    ["Nihai karar", detailField(row,"Nihai Karar")],
+    ["Teknik sinyal", detailField(row,"Teknik Sinyal")],
+    ["Piyasa rejimi", detailField(row,"Piyasa Rejimi")],
+    ["Sektör", detailField(row,"Sektör")],
+    ["Şirket sağlığı", detailField(row,"Şirket Sağlığı")],
+    ["Fiyatlama", detailField(row,"Fiyatlama")],
+    ["Güven", `${detailField(row,"Güven Seviyesi")} (${fmt(row["Güven Puanı"],0)})`],
+    ["Kalite", `${fmt(row["Temel Kalite Skoru"],1)} - ${detailField(row,"Kalite Trendi")}`],
+    ["Değerleme", fmt(row["Değerleme Skoru"],1)],
+    ["Kırmızı bayrak", fmtInt(row["Kırmızı Bayrak Sayısı"])],
+    ["RS / RSI", `RS20 ${fmt(row["rs_20"],2)} | RSI ${fmt(row["RSI 14"],1)}`],
+    ["Hacim / MACD", `${detailField(row,"Hacim Sinyali")} | ${detailField(row,"MACD Sinyali")}`],
+    ["Yakın hedef", detailField(row,"Yakın Hedef Bölgesi")],
+    ["İzleme", `${detailField(row,"İzleme Penceresi")} | ${detailField(row,"2 Haftalık Potansiyel")}`],
+  ].forEach(([k,v])=>{ html += renderDetailRow(k,v); });
+  html += '</div>';
+  const note=detailField(row,"Kısa Vade Notu","");
+  if(note) html += `<div class="detail-note">${esc(note)}</div>`;
+  out.innerHTML=html;
 }
 
 function saveSetup(){
   const t=document.getElementById("inToken").value.trim();
   const r=document.getElementById("inRepo").value.trim();
   const p=document.getElementById("inProfile").value.trim();
-  if(!t||!r||!p){ msg("Üç alanı da doldurun.","err"); return; }
+  const related=document.getElementById("inRelated").value.trim();
+  if(!t||!r||!p){ msg("Token, repo ve profil alanlarını doldurun.","err"); return; }
   if(!slugify(p)){ msg("Profil adı geçersiz.","err"); return; }
-  S.token=t; S.repo=r; S.profile=p;
+  S.token=t; S.repo=r; S.profile=p; S.relatedProfiles=related;
   localStorage.setItem(LS.token,t); localStorage.setItem(LS.repo,r);
-  localStorage.setItem(LS.profile,p);
+  localStorage.setItem(LS.profile,p); localStorage.setItem(LS.related,related);
   boot();
 }
-function resetSetup(){
-  for (const k of Object.values(LS)) localStorage.removeItem(k);
-  location.reload();
-}
 async function boot(){
-  if(!S.token||!S.repo||!S.profile){ show("setup"); return; }
+  if(!S.token||!S.repo||!S.profile){
+    document.getElementById("inToken").value=S.token;
+    document.getElementById("inRepo").value=S.repo;
+    document.getElementById("inProfile").value=S.profile;
+    document.getElementById("inRelated").value=S.relatedProfiles;
+    show("setup"); return;
+  }
   document.getElementById("nav").classList.remove("hide");
   const pill=document.getElementById("profilePill");
   pill.textContent=slugify(S.profile); pill.classList.remove("hide");
   document.getElementById("headSub").textContent=S.repo;
   show("adaylar");
-  await loadAdaylar();   // fiyat sözlüğü portföyden ÖNCE dolmalı
-  loadKarne();
-  loadPortfolio();
+  try{
+    await loadMarketData();
+    loadAdaylar();
+    loadKarne();
+    loadPortfolio();
+    renderDetail();
+  }catch(e){
+    msg(e.message,"err");
+  }
 }
 boot();
 </script>
