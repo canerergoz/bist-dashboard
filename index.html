@@ -180,10 +180,10 @@ const LS = {
   related:"bist_related_profiles",
 };
 const S = {
-  token: localStorage.getItem(LS.token) || "",
-  repo: localStorage.getItem(LS.repo) || "",
-  profile: localStorage.getItem(LS.profile) || "",
-  relatedProfiles: localStorage.getItem(LS.related) || "",
+  token: normalizeToken(localStorage.getItem(LS.token)),
+  repo: normalizeRepo(localStorage.getItem(LS.repo)),
+  profile: String(localStorage.getItem(LS.profile) || "").trim(),
+  relatedProfiles: String(localStorage.getItem(LS.related) || "").trim(),
   prices: {},
   candidateRows: [],
   rowBySymbol: {},
@@ -207,6 +207,27 @@ function slugify(name){
     .replace(/[çğıöşü]/g, ch=>map[ch])
     .replace(/[^a-z0-9_-]+/g,"-").replace(/^-+|-+$/g,"");
 }
+function normalizeToken(value){
+  return String(value || "").replace(/\s+/g, "");
+}
+function normalizeRepo(value){
+  let raw=String(value || "").trim();
+  raw=raw.replace(/^https?:\/\/github\.com\//i,"")
+    .replace(/^github\.com\//i,"")
+    .replace(/^\/+|\/+$/g,"")
+    .replace(/\.git$/i,"");
+  const parts=raw.split("/").filter(Boolean);
+  if(parts.length>=2) return `${parts[0]}/${parts[1].replace(/\.git$/i,"")}`;
+  return raw;
+}
+function githubContentsUrl(path){
+  const repo=normalizeRepo(S.repo);
+  if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)){
+    throw new Error("Repo alanı 'sahip/repo' formatında olmalı. Örn: canerergoz/assistant");
+  }
+  const safePath=String(path).split("/").map(encodeURIComponent).join("/");
+  return `https://api.github.com/repos/${repo}/contents/${safePath}`;
+}
 function normSymbol(value){ return String(value||"").trim().toUpperCase().replace(".IS",""); }
 function parseRelatedProfiles(raw){
   const active=slugify(S.profile);
@@ -224,7 +245,7 @@ function apiHeaders(extra){
   }, extra||{});
 }
 async function readJson(path){
-  const r = await fetch(`https://api.github.com/repos/${S.repo}/contents/${path}`,
+  const r = await fetch(githubContentsUrl(path),
     { headers: apiHeaders({ "Accept": "application/vnd.github.raw+json" }) });
   if (r.status === 404) return null;
   if (r.status === 401 || r.status === 403) throw new Error("Token reddedildi (yetki/expiry kontrol et).");
@@ -232,7 +253,7 @@ async function readJson(path){
   return await r.json();
 }
 async function fileSha(path){
-  const r = await fetch(`https://api.github.com/repos/${S.repo}/contents/${path}`,
+  const r = await fetch(githubContentsUrl(path),
     { headers: apiHeaders({ "Accept": "application/vnd.github+json" }) });
   if (r.status === 404) return null;
   if (!r.ok) throw new Error("Meta okunamadı: HTTP " + r.status);
@@ -243,7 +264,7 @@ async function writeJson(path, obj, message){
   const body = { message, content };
   const sha = await fileSha(path);
   if (sha) body.sha = sha;
-  const r = await fetch(`https://api.github.com/repos/${S.repo}/contents/${path}`,
+  const r = await fetch(githubContentsUrl(path),
     { method:"PUT", headers: apiHeaders({ "Accept":"application/vnd.github+json" }),
       body: JSON.stringify(body) });
   if (!r.ok){
@@ -622,8 +643,8 @@ function renderDetail(){
 }
 
 function saveSetup(){
-  const t=document.getElementById("inToken").value.trim();
-  const r=document.getElementById("inRepo").value.trim();
+  const t=normalizeToken(document.getElementById("inToken").value);
+  const r=normalizeRepo(document.getElementById("inRepo").value);
   const p=document.getElementById("inProfile").value.trim();
   const related=document.getElementById("inRelated").value.trim();
   if(!t||!r||!p){ msg("Token, repo ve profil alanlarını doldurun.","err"); return; }
@@ -634,6 +655,14 @@ function saveSetup(){
   boot();
 }
 async function boot(){
+  S.token=normalizeToken(S.token);
+  S.repo=normalizeRepo(S.repo);
+  S.profile=String(S.profile||"").trim();
+  S.relatedProfiles=String(S.relatedProfiles||"").trim();
+  if(S.token) localStorage.setItem(LS.token,S.token);
+  if(S.repo) localStorage.setItem(LS.repo,S.repo);
+  if(S.profile) localStorage.setItem(LS.profile,S.profile);
+  localStorage.setItem(LS.related,S.relatedProfiles);
   if(!S.token||!S.repo||!S.profile){
     document.getElementById("inToken").value=S.token;
     document.getElementById("inRepo").value=S.repo;
