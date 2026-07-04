@@ -107,6 +107,10 @@
   details.karne-detay{margin-top:10px;}
   details.karne-detay summary{font-size:12px;color:var(--acc);font-weight:700;
            cursor:pointer;padding:6px 0;}
+  /* --- Sektör ısı tablosu --- */
+  #sectorTable tr.heat td{color:#fff;border-bottom:1px solid rgba(255,255,255,.22);}
+  #sectorTable tr.heat td .cell-sub{color:rgba(255,255,255,.78);}
+  #sectorTable tr.heat.me td:first-child{font-weight:800;}
   /* --- MGB-4S grafik --- */
   .chart-wrap{position:relative;margin-top:10px;}
   #mgbCanvas{width:100%;height:340px;display:block;border:1px solid var(--line);
@@ -138,6 +142,7 @@
     <button id="nav-karne" onclick="show('karne')">Karne</button>
     <button id="nav-portfoy" onclick="show('portfoy')">Portföy</button>
     <button id="nav-detay" onclick="show('detay')">Detay</button>
+    <button id="nav-sektor" onclick="show('sektor')">Sektör</button>
   </nav>
 </header>
 <main>
@@ -236,6 +241,26 @@
       </p>
       <div id="detailOut" style="margin-top:10px"></div>
       <div id="finOut" style="margin-top:4px"></div>
+    </div>
+  </section>
+
+  <section id="view-sektor" class="hide">
+    <div class="card">
+      <h2>Sektör <span class="pill warn">görüntüleme katmanı</span></h2>
+      <div class="row">
+        <input id="sectorSym" placeholder="Sembol (örn. QUAGR)" style="margin:0" oninput="renderSector()">
+        <button class="btn small" onclick="renderSector()">Aç</button>
+      </div>
+      <div class="muted" id="sectorMeta" style="margin-top:8px">Sembol girilince hissenin sektör tablosu açılır.</div>
+      <div class="table-wrap"><table id="sectorTable"></table></div>
+      <p class="muted" style="margin-top:6px">
+        <b>Uygunluk</b> = sektör-içi temel veri yüzdeliklerinin ortalaması
+        (ROE, net marj ve ciro büyümesi yüksek; PD/DD ve Net Borç/Özkaynak
+        düşük olan üste çıkar; 0-100). En koyu yeşil = sektöründe temel
+        verisi en uygun, en koyu kırmızı = en az uygun. Bu tablo kalibre
+        edilmemiş bir GÖRÜNTÜLEME katmanıdır; merkezi V3 skoru değildir ve
+        yatırım tavsiyesi değildir.
+      </p>
     </div>
   </section>
 </main>
@@ -358,16 +383,28 @@ async function writeJson(path, obj, message){
 }
 
 function show(view){
-  for (const v of ["setup","adaylar","karne","portfoy","detay"])
+  for (const v of ["setup","adaylar","karne","portfoy","detay","sektor"])
     document.getElementById("view-"+v).classList.toggle("hide", v!==view);
-  for (const v of ["adaylar","karne","portfoy","detay"]){
+  for (const v of ["adaylar","karne","portfoy","detay","sektor"]){
     const b=document.getElementById("nav-"+v); if(b) b.classList.toggle("on", v===view);
   }
   if(view==="detay") renderDetail();
+  if(view==="sektor"){
+    const input=document.getElementById("sectorSym");
+    if(!input.value) input.value=document.getElementById("detailSym").value;
+    renderSector();
+  }
 }
 function fmt(x, d){ const n=Number(x);
   return Number.isFinite(n) ? n.toLocaleString("tr-TR",{minimumFractionDigits:d??2,maximumFractionDigits:d??2}) : "-"; }
 function fmtInt(x){ const n=Number(x); return Number.isFinite(n) ? n.toLocaleString("tr-TR",{maximumFractionDigits:0}) : "-"; }
+/* Görünen her tarih gün/ay/yıl (kullanıcı tercihi 2026-07-05). İç mantıkta
+   (asOf sıralaması, bar index'leri) ISO kalır — string karşılaştırması ISO'ya bağlı. */
+function fmtDate(value){
+  const s=String(value||"");
+  const m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : (s||"-");
+}
 function signCls(x){ const n=Number(x); return !Number.isFinite(n)?"":(n>0?"pos":(n<0?"neg":"")); }
 function num(value){
   if(value===null || value===undefined || typeof value==="boolean") return null;
@@ -543,7 +580,8 @@ function loadAdaylar(){
   pill.textContent=mode; pill.classList.toggle("hide", !mode);
   pill.classList.toggle("warn", mode==="V3_UI_CALC" || mode==="V3_VIEW");
   if(!rows.length){ meta.textContent="Aday bulunamadı."; el.innerHTML=""; return; }
-  const stamp=String(S.artifactInfo.generated_at||S.artifactInfo.selected_at||"").slice(0,16).replace("T"," ");
+  const rawStamp=String(S.artifactInfo.generated_at||S.artifactInfo.selected_at||"");
+  const stamp=rawStamp?`${fmtDate(rawStamp)} ${rawStamp.slice(11,16)}`.trim():"";
   const artifactMode=S.artifactInfo.mode ? ` | artifact: ${S.artifactInfo.mode}` : "";
   meta.textContent = `üretim: ${stamp || "?"} | ${rows.length} aday | sıralama: V3${artifactMode}`;
   let html = "<tr><th>#</th><th>Hisse</th><th>Şirket</th><th class=num>Fiyat</th><th class=num>Gün%</th><th class=num>V3</th></tr>";
@@ -565,7 +603,7 @@ async function loadKarne(){
     const rep = await readJson("data/analysis/morning_pick_report.json");
     if(!rep){ meta.textContent="Rapor bulunamadı."; return; }
     const s=rep.summary||{};
-    meta.textContent=`Karne tarihi: ${rep.report_date||"?"} · Notlanan öneri: ${rep.evaluated??"?"}`;
+    meta.textContent=`Karne tarihi: ${rep.report_date?fmtDate(rep.report_date):"?"} · Notlanan öneri: ${rep.evaluated??"?"}`;
     const byG=(rep.relative_summary||{}).by_group||{};
     const cand=byG.candidate||{}, ctrl=byG.control||{};
     const H=["1","3","5","10"];
@@ -895,7 +933,7 @@ const MGB = (() => {
     g.textAlign="center";
     const step=Math.max(1,Math.round((b-a)/5));
     for(let i=a;i<=b;i+=step)
-      g.fillText((D.t[i]||"").slice(5),xOf(i,W),H-7);
+      g.fillText((D.t[i]||"").slice(8,10)+"/"+(D.t[i]||"").slice(5,7),xOf(i,W),H-7);
 
     // episodlar: TP çizgileri + iz süren stop
     for(const ep of D.episodes){
@@ -997,11 +1035,11 @@ const MGB = (() => {
   function drawTip(W,H,yOf){
     const i=ST.tipIdx, D=ST.data, tip=$("mgbTip");
     const ep=activeEpisodeAt(i);
-    let html=`<b>${ST.sym}</b> ${D.t[i]}<br>Kapanış: <b>${fmtP(D.c[i])}</b> `+
+    let html=`<b>${ST.sym}</b> ${fmtDate(D.t[i])}<br>Kapanış: <b>${fmtP(D.c[i])}</b> `+
              `(A:${fmtP(D.l[i])} / Y:${fmtP(D.h[i])})`;
     if(ep){
       const dist=ep.trail[i]!=null?((D.c[i]/ep.trail[i]-1)*100):null;
-      html+=`<br>Giriş: ${fmtP(ep.entry)} (${D.t[ep.entryIdx]})`;
+      html+=`<br>Giriş: ${fmtP(ep.entry)} (${fmtDate(D.t[ep.entryIdx])})`;
       if(ep.exitReason) html+=`<br>Çıkış nedeni: ${ep.exitReason}`;
       ep.tps.forEach((tp,k)=>{
         const pct=((tp/D.c[i]-1)*100);
@@ -1106,8 +1144,8 @@ const MGB = (() => {
     const open=eps.find(ep=>ep.exitIdx==null);
     const last=eps[eps.length-1];
     status.textContent=`${normSymbol(sym)} · ${bars.c.length} gün · `+
-      (open?`AKTİF sinyal (giriş ${fmtP(open.entry)}, ${bars.t[open.entryIdx]})`
-           :(last?`son SAT: ${bars.t[last.exitIdx]} (${last.exitReason})`
+      (open?`AKTİF sinyal (giriş ${fmtP(open.entry)}, ${fmtDate(bars.t[open.entryIdx])})`
+           :(last?`son SAT: ${fmtDate(bars.t[last.exitIdx])} (${last.exitReason})`
                  :"sinyal yok"))+" · MGB-4S deneyseldir";
     setup(normSymbol(sym), bars);
   }
@@ -1135,7 +1173,7 @@ function renderDetail(){
       const n=bundleBars.c.length, last=bundleBars.c[n-1], prev=bundleBars.c[n-2];
       const p20=bundleBars.c[Math.max(0,n-21)];
       basic+=`<div class="metric-grid">
-        <div class="metric"><div class="label">Son kapanış</div><div class="value">${fmt(last)}</div><div class="muted">${esc(bundleBars.t[n-1])}</div></div>
+        <div class="metric"><div class="label">Son kapanış</div><div class="value">${fmt(last)}</div><div class="muted">${esc(fmtDate(bundleBars.t[n-1]))}</div></div>
         <div class="metric"><div class="label">Günlük</div><div class="value ${signCls((last/prev-1)*100)}">%${fmt((last/prev-1)*100,1)}</div><div class="muted">20g %${fmt((last/p20-1)*100,1)}</div></div>
       </div>`;
     }
@@ -1193,7 +1231,8 @@ function renderFin(sym){
   if(!out) return;
   const fin=S.chartBundle && (S.chartBundle.fin||{})[normSymbol(sym)];
   if(!fin){ out.innerHTML='<div class="muted" style="margin-top:8px">Son bilanço verisi bulunamadı.</div>'; return; }
-  const g=(v,d)=>{const n=num(v); return n===null?"-":"%"+fmt(n,d??1);};
+  // Tarihçe oranları KESİR tutar (−0.2146 = %−21.5); gösterimde ×100.
+  const g=(v,d)=>{const n=num(v); return n===null?"-":"%"+fmt(n*100,d??1);};
   let html=`<h2 style="margin-top:12px">Son Bilanço <span class="pill">${esc(fin.period_label||"?")}</span></h2>`;
   html+='<div class="detail-grid">';
   [
@@ -1206,10 +1245,73 @@ function renderFin(sym){
     ["Piyasa değeri", fmtTL(fin.market_cap)+" TL"],
     ["Net marj / ROE", `${g(fin.net_margin)} / ${g(fin.roe)}`],
     ["F/K / PD-DD", `${fmt(fin.pe,1)} / ${fmt(fin.pb,2)}`],
-    ["Açıklanma", String(fin.announcement||"-").slice(0,10)],
+    ["Açıklanma", fmtDate(fin.announcement)],
   ].forEach(([k,v])=>{ html+=renderDetailRow(k,v); });
   html+='</div><div class="muted" style="margin-top:4px">Kaynak: otomatik fundamentals tarihçesi (akşam üretiminde tazelenir).</div>';
   out.innerHTML=html;
+}
+
+/* ================= Sektör sekmesi =================
+   Sektör-içi temel veri ısı tablosu (bundle.fin.sector — KAP haritasından).
+   "Uygunluk" = mevcut yüzdeliklerin ortalaması; kalibre edilmemiş GÖRÜNTÜLEME
+   katmanı, merkezi V3 skoruyla karıştırılmamalı (skor üretimine bağlanmaz). */
+const SECTOR_DIMS = [
+  // [alan, yön(+1 yüksek iyi / -1 düşük iyi), başlık, basamaklar, yüzde-mi]
+  ["roe", 1, "ROE", 1, true],
+  ["net_margin", 1, "Net marj", 1, true],
+  ["revenue_growth", 1, "Ciro büy.", 1, true],
+  ["pb", -1, "PD/DD", 2, false],
+  ["nde", -1, "NetBorç/Özk", 2, false],
+];
+function heatColor(score){ // 0=en koyu kırmızı → 100=en koyu yeşil
+  const hue=Math.max(0,Math.min(120, score*1.2));
+  return `hsl(${hue},58%,30%)`;
+}
+async function renderSector(){
+  const meta=document.getElementById("sectorMeta"), table=document.getElementById("sectorTable");
+  if(!meta||!table) return;
+  const sym=normSymbol(document.getElementById("sectorSym").value);
+  if(!sym){ meta.textContent="Sembol girilince hissenin sektör tablosu açılır."; table.innerHTML=""; return; }
+  try{
+    if(!S.chartBundle){ meta.textContent="veri yükleniyor…"; S.chartBundle=await readJson("data/webapp_chart_bundle.json"); }
+  }catch(e){ meta.textContent="Veri okunamadı: "+e.message; return; }
+  const fin=(S.chartBundle && S.chartBundle.fin)||{};
+  const me=fin[sym];
+  if(!me){ meta.textContent=`${sym} için bilanço verisi pakette yok.`; table.innerHTML=""; return; }
+  if(!me.sector){ meta.textContent=`${sym} için sektör bilgisi pakette yok (harita eşleşmedi).`; table.innerHTML=""; return; }
+  const rows=Object.entries(fin)
+    .filter(([,f])=>f && f.sector===me.sector)
+    .map(([s,f])=>{
+      const eq=num(f.equity_spot), nd=num(f.net_debt);
+      return {sym:s, roe:num(f.roe), net_margin:num(f.net_margin),
+              revenue_growth:num(f.revenue_growth), pb:num(f.pb),
+              nde:(nd!==null && eq!==null && eq>0)?nd/eq:null};
+    });
+  for(const [key,dir] of SECTOR_DIMS){
+    const ranks=percentileRanks(rows.map(r=>r[key]===null?null:dir*r[key]));
+    rows.forEach((r,i)=>{
+      if(r[key]===null) return;
+      (r._p??(r._p=[])).push(ranks[i]);
+    });
+  }
+  rows.forEach(r=>{ r.score=(r._p && r._p.length>=2)
+    ? Math.round(r._p.reduce((a,b)=>a+b,0)/r._p.length) : null; });
+  rows.sort((a,b)=>(b.score??-1)-(a.score??-1) || a.sym.localeCompare(b.sym));
+  meta.textContent=`${me.sector} · ${rows.length} hisse · yeşil=sektör içinde temel verisi daha uygun`;
+  let html="<tr><th>Hisse</th><th class=num>Uygunluk</th>"+
+    SECTOR_DIMS.map(d=>`<th class=num>${d[2]}</th>`).join("")+"</tr>";
+  for(const r of rows){
+    const isMe=r.sym===sym;
+    const style=r.score!==null?` style="background:${heatColor(r.score)}"`:"";
+    const cls=r.score!==null?`heat${isMe?" me":""}`:"";
+    html+=`<tr class="${cls}"${style}><td>${isMe?"★ ":""}<b>${esc(r.sym)}</b></td>`+
+      `<td class=num>${r.score!==null?r.score:"veri az"}</td>`+
+      SECTOR_DIMS.map(([key,,,digits,isPct])=>{
+        const v=r[key];
+        return `<td class=num>${v===null?"-":(isPct?"%"+fmt(v*100,digits):fmt(v,digits))}</td>`;
+      }).join("")+"</tr>";
+  }
+  table.innerHTML=html;
 }
 
 function saveSetup(){
