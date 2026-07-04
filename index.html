@@ -22,8 +22,13 @@
   body{background:var(--bg);color:var(--ink);}
   header{padding:14px 16px 10px;background:var(--card);border-bottom:1px solid var(--line);
          position:sticky;top:0;z-index:5;}
+  .head-line{display:flex;align-items:center;justify-content:space-between;gap:10px;}
   header h1{font-size:17px;font-weight:700;letter-spacing:0;}
   header .sub{font-size:11px;color:var(--sub);margin-top:2px;word-break:break-word;}
+  .refresh-btn{flex:0 0 auto;width:34px;height:34px;border:1px solid var(--line);
+        border-radius:8px;background:var(--soft);color:var(--acc);font-size:19px;
+        font-weight:700;line-height:1;cursor:pointer;}
+  .refresh-btn:active{background:#dfeaf2;}
   main{padding:12px;max-width:720px;margin:0 auto;}
   .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
         padding:12px;margin-bottom:12px;}
@@ -90,7 +95,10 @@
 </head>
 <body>
 <header>
-  <h1>BIST Assistant <span id="profilePill" class="pill hide"></span></h1>
+  <div class="head-line">
+    <h1>BIST Assistant <span id="profilePill" class="pill hide"></span></h1>
+    <button id="refreshBtn" class="refresh-btn" type="button" onclick="refreshApp()" aria-label="Yenile" title="Yenile">↻</button>
+  </div>
   <div class="sub" id="headSub">kurulum bekleniyor</div>
   <nav id="nav" class="hide">
     <button id="nav-adaylar" onclick="show('adaylar')">Adaylar</button>
@@ -195,6 +203,12 @@ const S = {
 function msg(text, kind){ const el=document.getElementById("msg");
   el.textContent=text; el.className="msg "+(kind||"ok");
   if(kind!=="err") setTimeout(()=>{el.className="msg";}, 4000); }
+
+function refreshApp(){
+  const url=new URL(window.location.href);
+  url.searchParams.set("v", Date.now().toString(36));
+  window.location.replace(url.toString());
+}
 
 function esc(value){
   return String(value ?? "").replace(/[&<>"']/g, ch => (
