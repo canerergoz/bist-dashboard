@@ -90,6 +90,23 @@
     .form-grid{grid-template-columns:1fr;}
     .metric-grid{grid-template-columns:1fr 1fr;}
   }
+  /* --- Karne v2 (okul karnesi) --- */
+  .grade-row{display:flex;align-items:center;gap:10px;padding:10px 0;
+             border-bottom:1px solid var(--line);}
+  .grade-row:last-child{border-bottom:none;}
+  .grade-badge{flex:0 0 auto;min-width:64px;text-align:center;border-radius:8px;
+               padding:7px 8px;font-weight:800;font-size:13px;color:#fff;}
+  .grade-badge.g-iyi{background:#2f6f44;} .grade-badge.g-orta{background:#b8860b;}
+  .grade-badge.g-zayif{background:#a33a3a;} .grade-badge.g-yok{background:#8a97a3;}
+  .grade-body{min-width:0;}
+  .grade-body .ders{font-weight:700;font-size:13px;}
+  .grade-body .aciklama{font-size:12px;color:var(--ink);line-height:1.4;margin-top:2px;}
+  .verdict{border:1px solid var(--line);border-left:4px solid var(--warn);
+           border-radius:8px;background:#fffdf5;padding:10px 12px;font-size:13px;
+           line-height:1.45;margin-bottom:10px;}
+  details.karne-detay{margin-top:10px;}
+  details.karne-detay summary{font-size:12px;color:var(--acc);font-weight:700;
+           cursor:pointer;padding:6px 0;}
   /* --- MGB-4S grafik --- */
   .chart-wrap{position:relative;margin-top:10px;}
   #mgbCanvas{width:100%;height:340px;display:block;border:1px solid var(--line);
@@ -152,16 +169,23 @@
 
   <section id="view-karne" class="hide">
     <div class="card">
-      <h2>Ölçüm karnesi</h2>
+      <h2>Sistemin Karnesi</h2>
       <div class="muted" id="karneMeta">yükleniyor...</div>
-      <div class="table-wrap"><table id="karneTable"></table></div>
-      <p class="muted" style="margin-top:8px">
-        <b>Nasıl okunur:</b> "Endekse fark" = önerilerin o ufukta XU100'e göre
-        ORTALAMA farkı (−0,72 → öneriler endeksin ortalama 0,72 puan gerisinde).
-        "Endeksi yenen" = önerilerin yüzde kaçı endeksten iyi getirdi.
-        İkisi çelişmez: %38 öneri endeksi yense bile birkaç kötü gün ortalamayı
-        eksiye çekebilir. Sistem bu tabloyu süslemez — bugünkü gerçek durum bu.
-      </p>
+      <div class="verdict" id="karneVerdict"></div>
+      <div id="karneGrades"></div>
+      <details class="karne-detay">
+        <summary>Detaylı tablo (meraklısına)</summary>
+        <div class="table-wrap"><table id="karneTable"></table></div>
+        <p class="muted" style="margin-top:8px">
+          <b>Nasıl okunur:</b> "Endekse fark" = o ufukta XU100'e göre ORTALAMA
+          fark, puan olarak. "Endeksi yenen" = önerilerin yüzde kaçı endeksten
+          iyi getirdi. Bu oranı <b>%50 ile değil, Rastgele satırıyla</b>
+          kıyaslayın: endeks ağırlıklı ortalamadır ve tipik hisse onun altında
+          kalır — rastgele seçim bile endeksi çoğunlukla yenemez. Ortalama
+          negatifken yenme oranının %35-40 olması çelişki değildir: birkaç kötü
+          gün ortalamayı aşağı çeker.
+        </p>
+      </details>
     </div>
   </section>
 
@@ -530,22 +554,74 @@ function loadAdaylar(){
 }
 
 async function loadKarne(){
-  const el=document.getElementById("karneTable"), meta=document.getElementById("karneMeta");
+  const meta=document.getElementById("karneMeta");
   try{
     const rep = await readJson("data/analysis/morning_pick_report.json");
     if(!rep){ meta.textContent="Rapor bulunamadı."; return; }
-    const s = rep.summary||{};
-    meta.textContent = `rapor: ${rep.report_date||"?"} | değerlendirilen: ${rep.evaluated??"?"} | `+
-      `kazanma: %${fmt(s.win_rate_pct,1)} | ort. getiri: %${fmt(s.avg_return_pct,2)}`;
-    const by = ((rep.relative_summary||{}).by_group||{}).candidate || {};
-    let html = "<tr><th>Ufuk</th><th class=num>Endekse fark (puan)</th><th class=num>Endeksi yenen</th><th class=num>Öneri sayısı</th></tr>";
-    for (const h of ["1","3","5","10"]){
-      const d = by[h]||{};
+    const s=rep.summary||{};
+    meta.textContent=`Karne tarihi: ${rep.report_date||"?"} · Notlanan öneri: ${rep.evaluated??"?"}`;
+    const byG=(rep.relative_summary||{}).by_group||{};
+    const cand=byG.candidate||{}, ctrl=byG.control||{};
+    const H=["1","3","5","10"];
+    const rel=h=>num((cand[h]||{}).avg_relative_return_pct);
+    const relC=h=>num((ctrl[h]||{}).avg_relative_return_pct);
+
+    /* Ders 1 — Endeksi geçebilme: tüm ufuklardaki ortalama fark */
+    const rels=H.map(rel).filter(v=>v!==null);
+    const relAvg=rels.length?rels.reduce((a,b)=>a+b,0)/rels.length:null;
+    let g1, a1;
+    if(relAvg===null){ g1=["Veri yok","g-yok"]; a1="Henüz yeterli sonuç birikmedi."; }
+    else if(rels.every(v=>v>0)){ g1=["İyi","g-iyi"];
+      a1=`100 TL'lik yarışta öneri sepeti, endeks fonunu ortalama ${fmt(Math.abs(relAvg),1)} TL geçti.`; }
+    else if(relAvg>0){ g1=["Orta","g-orta"];
+      a1="Bazı ufuklarda endeksin önünde, bazılarında gerisinde — net üstünlük yok."; }
+    else { g1=["Zayıf","g-zayif"];
+      a1=`100 TL ile yarış: 10 gün sonunda öneri sepeti, endeks fonunun ortalama ${fmt(Math.abs(rel("10")??relAvg),1)} TL gerisinde kaldı. Şimdilik endeks fonu önde.`; }
+
+    /* Ders 2 — Rastgeleden iyi olma: candidate − control farkı */
+    const diffs=H.map(h=>{const a=rel(h),b=relC(h);return (a!==null&&b!==null)?a-b:null;})
+                 .filter(v=>v!==null);
+    const dAvg=diffs.length?diffs.reduce((a,b)=>a+b,0)/diffs.length:null;
+    let g2,a2;
+    if(dAvg===null){ g2=["Veri yok","g-yok"]; a2="Kıyas için veri yok."; }
+    else if(dAvg>1){ g2=["İyi","g-iyi"];
+      a2=`Gözü kapalı (rastgele) seçime göre ortalama ${fmt(dAvg,1)} puan daha iyi — seçim bir işe yarıyor.`; }
+    else if(dAvg>0){ g2=["Orta","g-orta"];
+      a2=`Rastgele seçimden ortalama ${fmt(dAvg,1)} puan iyi; ama fark küçük — şans da olabilir, kanıt birikiyor.`; }
+    else { g2=["Zayıf","g-zayif"];
+      a2="Rastgele seçim bile şu an daha iyi görünüyor."; }
+
+    /* Ders 3 — Para kazandırma (mutlak): kazanma oranı + ortalama getiri */
+    const win=num(s.win_rate_pct), avg=num(s.avg_return_pct);
+    let g3,a3;
+    if(win===null){ g3=["Veri yok","g-yok"]; a3="Veri yok."; }
+    else { g3 = win>=60?["İyi","g-iyi"]:(win>=50?["Orta","g-orta"]:["Zayıf","g-zayif"]);
+      a3=`Her 10 öneriden ${Math.round(win/10)}'i para kazandırdı; ortalama getiri %${fmt(avg,1)}. `+
+         `(Dikkat: piyasa yükselirken çoğu şey kazandırır — asıl soru yukarıdaki iki ders.)`; }
+
+    const grades=[["Endeksi geçebilme",g1,a1],["Rastgeleden iyi seçebilme",g2,a2],["Para kazandırma",g3,a3]];
+    document.getElementById("karneGrades").innerHTML = grades.map(([ders,[not_,cls],ac])=>
+      `<div class="grade-row"><div class="grade-badge ${cls}">${not_}</div>
+       <div class="grade-body"><div class="ders">${ders}</div>
+       <div class="aciklama">${ac}</div></div></div>`).join("");
+
+    const worst=[g1,g2,g3].some(g=>g[1]==="g-zayif");
+    document.getElementById("karneVerdict").innerHTML =
+      `<b>Öğretmen görüşü:</b> ${ worst
+        ? "Sistem henüz endeks fonundan iyi değil ve bunu saklamıyor. Tam da bu yüzden yeni skorlayıcı (V3) denemede — onun ilk notları ~17 Temmuz'dan itibaren bu karneye düşecek."
+        : "Sistem endeksin önünde — ama kanıt biriktikçe teyit edilmeli."} Yatırım tavsiyesi değildir.`;
+
+    /* Detay tablosu: candidate + KONTROL satırlarıyla */
+    let html = "<tr><th>Ufuk</th><th class=num>Öneri: endekse fark</th><th class=num>Öneri: yenme</th><th class=num>Rastgele: fark</th><th class=num>Rastgele: yenme</th></tr>";
+    for (const h of H){
+      const c=cand[h]||{}, k=ctrl[h]||{};
       html += `<tr><td>${h} gün</td>
-        <td class="num ${signCls(d.avg_relative_return_pct)}">${fmt(d.avg_relative_return_pct,2)}</td>
-        <td class=num>%${fmt(d.relative_win_rate_pct,1)}</td><td class=num>${d.n??"-"}</td></tr>`;
+        <td class="num ${signCls(c.avg_relative_return_pct)}">${fmt(c.avg_relative_return_pct,2)}</td>
+        <td class=num>%${fmt(c.relative_win_rate_pct,1)}</td>
+        <td class="num ${signCls(k.avg_relative_return_pct)}">${fmt(k.avg_relative_return_pct,2)}</td>
+        <td class=num>%${fmt(k.relative_win_rate_pct,1)}</td></tr>`;
     }
-    el.innerHTML = html;
+    document.getElementById("karneTable").innerHTML = html;
   }catch(e){ meta.textContent=""; msg(e.message,"err"); }
 }
 
