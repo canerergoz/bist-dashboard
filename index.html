@@ -119,7 +119,10 @@
   .chart-legend span::before{content:"—";margin-right:3px;font-weight:900;}
   .lg-price::before{color:#22303c;} .lg-chan::before{color:#5c6a79;} .lg-tp::before{color:#2980b9;}
   .lg-stop::before{color:#c0392b;} .lg-sq::before{color:#b8860b;}
-  .lg-al::before{content:"▲";color:#2f6f44;} .lg-sat::before{content:"▼";color:#c0392b;}
+  .lg-al::before{content:"▲";color:#3b3fae;} .lg-sat::before{content:"▼";color:#c0392b;}
+  .lg-zlma::before{color:#2962ff;} .lg-ema::before{color:#e6911e;}
+  .lg-ks1::before{color:#3f9142;} .lg-ks2::before{color:#e05a4e;}
+  .lg-ks3::before{color:#2b2e83;} .lg-ks4::before{color:#8e44ad;}
   .hide{display:none!important;}
 </style>
 </head>
@@ -217,9 +220,12 @@
       </div>
       <div class="chart-legend">
         <span class="lg-price">Günlük mum</span><span class="lg-chan">Kanal (üst/alt)</span>
+        <span class="lg-zlma">Trend şeridi (mavi↑/kırmızı↓)</span><span class="lg-ema">EMA 21</span>
         <span class="lg-sq">Yatay bant dönemi</span>
         <span class="lg-al">AL</span><span class="lg-sat">SAT</span>
-        <span class="lg-tp">KS1-KS4 (kâr satışı)</span><span class="lg-stop">İz süren stop</span>
+        <span class="lg-ks1">KS1</span><span class="lg-ks2">KS2</span>
+        <span class="lg-ks3">KS3</span><span class="lg-ks4">KS4</span>
+        <span class="lg-stop">İz süren stop</span>
       </div>
       <p class="muted" style="margin-top:6px">
         Kural: yatay bant sonrası mum kanal ÜSTÜNE dokunup <b>kapanış üstte kalırsa AL</b>;
@@ -737,7 +743,24 @@ function renderDetailRow(label, value){
    - Kapanış stopun altına inince SAT (episod biter).                       */
 const MGB = (() => {
   const CFG = {don:20, bb:20, bbK:2, sqWin:60, sqPct:0.25, sqLag:5,
-               atr:14, tpMult:[1,2,3,4], chLook:22, chMult:3};
+               atr:14, tpMult:[1,2,3,4], chLook:22, chMult:3,
+               zlma:21, ema:21,
+               // Orijinal göstergenin KAR SATIŞI 1-4 çizgi renkleri (ayar panelinden):
+               tpColors:["#3f9142","#e05a4e","#2b2e83","#8e44ad"]};
+
+  function emaSeries(src,p){
+    const out=new Array(src.length).fill(null);
+    const k=2/(p+1); let e=src[0];
+    for(let i=0;i<src.length;i++){ e = i? src[i]*k + e*(1-k) : src[0]; out[i]=e; }
+    return out;
+  }
+  // Zero Lag MA ≈ 2*EMA(p) − EMA(EMA(p)) — orijinaldeki iki renkli kalın
+  // trend şeridi (mavi=yukarı eğim, kırmızı=aşağı). Periyot ayar panelinde
+  // görünmüyor; 21 varsayıldı (dokümante yaklaşıklık).
+  function zlmaSeries(c,p){
+    const e1=emaSeries(c,p), e2=emaSeries(e1,p);
+    return e1.map((v,i)=>2*v-e2[i]);
+  }
 
   function wilderATR(h,l,c){
     const n=CFG.atr, atr=new Array(c.length).fill(null);
@@ -811,7 +834,8 @@ const MGB = (() => {
       }
     }
     if(ep) episodes.push(ep);           // hâlâ açık pozisyon
-    return {t,o:bars.o,h,l,c,atr,squeeze,donHi,donLo,episodes};
+    return {t,o:bars.o,h,l,c,atr,squeeze,donHi,donLo,episodes,
+            zlma:zlmaSeries(c,CFG.zlma), ema21:emaSeries(c,CFG.ema)};
   }
 
   /* --------------- ÇİZİM + ETKİLEŞİM --------------- */
@@ -880,14 +904,14 @@ const MGB = (() => {
       const x0=Math.max(PAD.l,xOf(ep.entryIdx,W));
       ep.tps.forEach((tp,k)=>{
         const y=yOf(tp); if(y<PAD.t||y>H-PAD.b) return;
-        g.setLineDash([5,4]);
-        g.strokeStyle=ep.tpHit[k]?"rgba(47,111,68,.9)":"rgba(41,128,185,.55)";
-        g.lineWidth=ep.tpHit[k]?1.6:1;
+        const col=CFG.tpColors[k];
+        g.setLineDash(ep.tpHit[k]?[]:[5,4]);           // vurulan: düz çizgi
+        g.strokeStyle=col; g.globalAlpha=ep.tpHit[k]?0.95:0.5;
+        g.lineWidth=ep.tpHit[k]?1.7:1.1;
         g.beginPath(); g.moveTo(x0,y); g.lineTo(W-PAD.r,y); g.stroke();
-        g.setLineDash([]);
-        g.fillStyle=ep.tpHit[k]?"#2f6f44":"#2980b9";
-        g.textAlign="left"; g.font="9px system-ui";
-        g.fillText(`TP${k+1}${ep.tpHit[k]?" ✓":""}`,W-PAD.r+4,y-11+3);
+        g.globalAlpha=1; g.setLineDash([]);
+        g.fillStyle=col; g.textAlign="left"; g.font="bold 9px system-ui";
+        g.fillText(`KS${k+1}${ep.tpHit[k]?" ✓":""}`,W-PAD.r+4,y-11+3);
       });
       g.setLineDash([3,3]); g.strokeStyle="#c0392b"; g.lineWidth=1.4;
       g.beginPath(); let started=false;
@@ -906,6 +930,22 @@ const MGB = (() => {
       g.stroke(); };
     g.strokeStyle="rgba(92,106,121,.75)"; g.lineWidth=1.1;
     chan(D.donHi); chan(D.donLo);
+
+    // Zero Lag MA trend şeridi (orijinaldeki kalın mavi/kırmızı omurga)
+    for(let i=a+1;i<=b;i++){
+      if(D.zlma[i]==null||D.zlma[i-1]==null) continue;
+      g.strokeStyle = D.zlma[i]>=D.zlma[i-1] ? "rgba(41,98,255,.85)" : "rgba(224,90,78,.85)";
+      g.lineWidth=3.2; g.lineCap="round";
+      g.beginPath(); g.moveTo(xOf(i-1,W),yOf(D.zlma[i-1]));
+      g.lineTo(xOf(i,W),yOf(D.zlma[i])); g.stroke();
+    }
+    // EMA 21 (orijinaldeki turuncu çizgi; diğer EMA'lar telefon ekranında
+    // kalabalık yaptığı için bilinçli çizilmiyor)
+    g.strokeStyle="rgba(230,145,30,.9)"; g.lineWidth=1.2; g.beginPath();
+    { let st=false;
+      for(let i=a;i<=b;i++){ if(D.ema21[i]==null){st=false;continue;}
+        const x=xOf(i,W),y=yOf(D.ema21[i]); st?g.lineTo(x,y):g.moveTo(x,y); st=true; } }
+    g.stroke();
 
     // günlük mumlar (yeşil=yükseliş, kırmızı=düşüş)
     const bw2=Math.max(2,(W-PAD.l-PAD.r)/Math.max(1,b-a)*0.62);
@@ -932,13 +972,13 @@ const MGB = (() => {
     };
     for(const ep of D.episodes){
       if(ep.entryIdx>=a&&ep.entryIdx<=b)
-        balloon(xOf(ep.entryIdx,W),yOf(D.l[ep.entryIdx])+4,"AL","#2f6f44",true);
+        balloon(xOf(ep.entryIdx,W),yOf(D.l[ep.entryIdx])+4,"AL","#3b3fae",true);
       if(ep.exitIdx!=null&&ep.exitIdx>=a&&ep.exitIdx<=b)
         balloon(xOf(ep.exitIdx,W),yOf(D.h[ep.exitIdx])-4,"SAT","#c0392b",false);
       (ep.tpHitIdx||[]).forEach((hi,k)=>{
         if(hi==null||hi<a||hi>b) return;
         const x=xOf(hi,W), y=yOf(D.h[hi])-6;
-        g.fillStyle="#8e44ad"; g.font="bold 9px system-ui"; g.textAlign="center";
+        g.fillStyle=CFG.tpColors[k]; g.font="bold 9px system-ui"; g.textAlign="center";
         g.beginPath(); g.moveTo(x,y+4); g.lineTo(x-4,y-3); g.lineTo(x+4,y-3);
         g.closePath(); g.fill();
         g.fillText("KS"+(k+1), x, y-6);
