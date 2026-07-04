@@ -100,7 +100,7 @@
   .chart-tip b{color:#9fd3a8;}
   .chart-legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:10px;color:var(--sub);}
   .chart-legend span::before{content:"—";margin-right:3px;font-weight:900;}
-  .lg-price::before{color:#22303c;} .lg-tp::before{color:#2980b9;}
+  .lg-price::before{color:#22303c;} .lg-chan::before{color:#5c6a79;} .lg-tp::before{color:#2980b9;}
   .lg-stop::before{color:#c0392b;} .lg-sq::before{color:#b8860b;}
   .lg-al::before{content:"▲";color:#2f6f44;} .lg-sat::before{content:"▼";color:#c0392b;}
   .hide{display:none!important;}
@@ -156,8 +156,11 @@
       <div class="muted" id="karneMeta">yükleniyor...</div>
       <div class="table-wrap"><table id="karneTable"></table></div>
       <p class="muted" style="margin-top:8px">
-        "Göreli" = XU100 endeksine kıyasla. Negatif göreli değer, önerilerin o
-        ufukta endeksin gerisinde kaldığını söyler.
+        <b>Nasıl okunur:</b> "Endekse fark" = önerilerin o ufukta XU100'e göre
+        ORTALAMA farkı (−0,72 → öneriler endeksin ortalama 0,72 puan gerisinde).
+        "Endeksi yenen" = önerilerin yüzde kaçı endeksten iyi getirdi.
+        İkisi çelişmez: %38 öneri endeksi yense bile birkaç kötü gün ortalamayı
+        eksiye çekebilir. Sistem bu tabloyu süslemez — bugünkü gerçek durum bu.
       </p>
     </div>
   </section>
@@ -172,40 +175,37 @@
         <input id="pfCost" type="number" inputmode="decimal" placeholder="Maliyet">
       </div>
       <div class="muted" id="pfPriceHint" style="margin:6px 0 10px"></div>
-      <div class="row">
-        <button class="btn gray" onclick="addPosition()">Ekle</button>
-        <button class="btn" onclick="savePortfolio()">Kaydet</button>
-      </div>
+      <button class="btn" onclick="addPosition()">Ekle ve Kaydet</button>
     </div>
   </section>
 
   <section id="view-detay" class="hide">
     <div class="card">
-      <h2>Detay</h2>
+      <h2>Detay <span class="pill warn">MGB-4S deneysel</span></h2>
       <div class="row">
-        <input id="detailSym" placeholder="Sembol (örn. THYAO)" style="margin:0" oninput="renderDetail()">
+        <input id="detailSym" placeholder="Sembol (BIST evreninden herhangi biri)" style="margin:0" oninput="renderDetail()">
         <button class="btn small" onclick="renderDetail()">Aç</button>
       </div>
-      <div id="detailOut" style="margin-top:10px"></div>
-    </div>
-    <div class="card" id="chartCard">
-      <h2>MGB-4S Grafiği <span class="pill warn">deneysel gösterge</span></h2>
-      <div class="muted" id="mgbStatus">grafik verisi bekleniyor…</div>
+      <div class="muted" id="mgbStatus" style="margin-top:8px">grafik verisi bekleniyor…</div>
       <div class="chart-wrap">
         <canvas id="mgbCanvas"></canvas>
         <div class="chart-tip" id="mgbTip"></div>
       </div>
       <div class="chart-legend">
-        <span class="lg-price">Fiyat</span><span class="lg-sq">Sıkışma bandı</span>
+        <span class="lg-price">Günlük mum</span><span class="lg-chan">Kanal (üst/alt)</span>
+        <span class="lg-sq">Yatay bant dönemi</span>
         <span class="lg-al">AL</span><span class="lg-sat">SAT</span>
-        <span class="lg-tp">TP1-TP4</span><span class="lg-stop">İz süren stop</span>
+        <span class="lg-tp">KS1-KS4 (kâr satışı)</span><span class="lg-stop">İz süren stop</span>
       </div>
       <p class="muted" style="margin-top:6px">
-        MGB-4S: 20-bar Donchian/Bollinger sıkışması kırılımında AL; ATR tabanlı 4
-        kâr hedefi + iz süren stop. Kaydır: sürükle · Yakınlaştır: iki parmak/tekerlek ·
-        Dokun: özet. Bu görsel katman merkezi skorlamadan BAĞIMSIZDIR; yatırım
-        tavsiyesi değildir.
+        Kural: yatay bant sonrası mum kanal ÜSTÜNE dokunup <b>kapanış üstte kalırsa AL</b>;
+        kanal ALTINA inip <b>kapanış altta kalırsa</b> veya iz süren stop kapanışla
+        kırılırsa <b>SAT</b>. KS1-KS4 = ATR tabanlı kısmi kâr-satış seviyeleri.
+        Mumlar GÜNLÜKtür (repo verisi gün sonu). Kaydır/iki parmakla yakınlaştır/dokun.
+        Bu görsel katman merkezi skorlamadan bağımsızdır; yatırım tavsiyesi değildir.
       </p>
+      <div id="detailOut" style="margin-top:10px"></div>
+      <div id="finOut" style="margin-top:4px"></div>
     </div>
   </section>
 </main>
@@ -538,7 +538,7 @@ async function loadKarne(){
     meta.textContent = `rapor: ${rep.report_date||"?"} | değerlendirilen: ${rep.evaluated??"?"} | `+
       `kazanma: %${fmt(s.win_rate_pct,1)} | ort. getiri: %${fmt(s.avg_return_pct,2)}`;
     const by = ((rep.relative_summary||{}).by_group||{}).candidate || {};
-    let html = "<tr><th>Ufuk</th><th class=num>Göreli %</th><th class=num>Göreli kazanma</th><th class=num>n</th></tr>";
+    let html = "<tr><th>Ufuk</th><th class=num>Endekse fark (puan)</th><th class=num>Endeksi yenen</th><th class=num>Öneri sayısı</th></tr>";
     for (const h of ["1","3","5","10"]){
       const d = by[h]||{};
       html += `<tr><td>${h} gün</td>
@@ -636,10 +636,9 @@ function addPosition(){
   else S.positions.push({symbol:sym, quantity:qty, avg_cost:cost});
   for (const id of ["pfSym","pfQty","pfCost"]) document.getElementById(id).value="";
   renderPortfolio();
-  msg("Eklendi. Repo'ya işlemek için Kaydet'e bas.");
+  savePortfolio();  // tek akış (2026-07-04): her değişiklik anında repo'ya yazılır
 }
-function delPosition(i){ S.positions.splice(i,1); renderPortfolio();
-  msg("Silindi. Repo'ya işlemek için Kaydet'e bas."); }
+function delPosition(i){ S.positions.splice(i,1); renderPortfolio(); savePortfolio(); }
 async function savePortfolio(){
   try{
     await writeJson(pfPath(S.profile), {positions:S.positions},
@@ -678,7 +677,7 @@ const MGB = (() => {
     const {t,h,l,c}=bars, n=c.length;
     const atr=wilderATR(h,l,c);
     const bw=new Array(n).fill(null), squeeze=new Array(n).fill(false),
-          donHi=new Array(n).fill(null);
+          donHi=new Array(n).fill(null), donLo=new Array(n).fill(null);
     for(let i=0;i<n;i++){
       if(i>=CFG.bb-1){
         let s=0; for(let j=i-CFG.bb+1;j<=i;j++) s+=c[j];
@@ -688,8 +687,9 @@ const MGB = (() => {
         if(m>0) bw[i]=(2*CFG.bbK*sd)/m;
       }
       if(i>=CFG.don-1){
-        let mx=-Infinity; for(let j=i-CFG.don+1;j<=i;j++) mx=Math.max(mx,h[j]);
-        donHi[i]=mx;
+        let mx=-Infinity, mn=Infinity;
+        for(let j=i-CFG.don+1;j<=i;j++){ mx=Math.max(mx,h[j]); mn=Math.min(mn,l[j]); }
+        donHi[i]=mx; donLo[i]=mn;
       }
     }
     for(let i=0;i<n;i++){
@@ -705,12 +705,16 @@ const MGB = (() => {
         if(donHi[i-1]===null || atr[i]===null) continue;
         let recentSq=false;
         for(let j=Math.max(0,i-CFG.sqLag);j<i;j++) if(squeeze[j]){recentSq=true;break;}
+        // AL (kullanıcı teyidi, 2026-07-04): mum kanal ÜSTÜNE dokunabilir ama
+        // sinyal KAPANIŞLA doğrulanır — close, önceki 20-bar tepe kanalının
+        // üzerinde kalmalı; ayrıca yakın geçmişte yatay bant (sıkışma) dönemi
+        // aranır (tasarımcı: "yatay bant oluşum dönemlerini ayrıştırır").
         if(recentSq && c[i]>donHi[i-1]){
           const entry=c[i], a=atr[i];
           ep={entryIdx:i, entry:entry, atr:a,
               tps:CFG.tpMult.map(k=>entry+k*a),
-              tpHit:[false,false,false,false],
-              trail:[], exitIdx:null};
+              tpHit:[false,false,false,false], tpHitIdx:[null,null,null,null],
+              trail:[], exitIdx:null, exitReason:null};
           ep.trail[i]=entry-CFG.chMult*a;
         }
       } else {
@@ -718,12 +722,20 @@ const MGB = (() => {
         for(let j=Math.max(ep.entryIdx,i-CFG.chLook+1);j<=i;j++) hiC=Math.max(hiC,c[j]);
         const raw=hiC-CFG.chMult*(atr[i]??ep.atr);
         ep.trail[i]=Math.max(ep.trail[i-1]??-Infinity, raw);
-        ep.tps.forEach((tp,k)=>{ if(h[i]>=tp) ep.tpHit[k]=true; });
-        if(c[i]<ep.trail[i]){ ep.exitIdx=i; episodes.push(ep); ep=null; }
+        ep.tps.forEach((tp,k)=>{ if(h[i]>=tp && !ep.tpHit[k]){ ep.tpHit[k]=true; ep.tpHitIdx[k]=i; } });
+        // SAT (kullanıcı kuralı + tasarımcının "trend bitişi"): kapanış önceki
+        // 20-bar dip kanalının ALTINA inerse (bant kırılımı) VEYA iz süren
+        // stopun altına kapanırsa — hangisi önce gelirse.
+        const bandBreak = donLo[i-1]!==null && c[i]<donLo[i-1];
+        const trailBreak = c[i]<ep.trail[i];
+        if(bandBreak || trailBreak){
+          ep.exitIdx=i; ep.exitReason = trailBreak ? "trend bitişi (iz süren stop)" : "alt bant kırılımı";
+          episodes.push(ep); ep=null;
+        }
       }
     }
     if(ep) episodes.push(ep);           // hâlâ açık pozisyon
-    return {t,h,l,c,atr,squeeze,episodes};
+    return {t,o:bars.o,h,l,c,atr,squeeze,donHi,donLo,episodes};
   }
 
   /* --------------- ÇİZİM + ETKİLEŞİM --------------- */
@@ -811,11 +823,24 @@ const MGB = (() => {
       g.stroke(); g.setLineDash([]);
     }
 
-    // fiyat çizgisi
-    g.strokeStyle="#22303c"; g.lineWidth=1.6; g.beginPath();
-    for(let i=a;i<=b;i++){ const x=xOf(i,W),y=yOf(D.c[i]);
-      i===a?g.moveTo(x,y):g.lineTo(x,y); }
-    g.stroke();
+    // Donchian kanal çizgileri (üst/alt — TradingView görselindeki gibi)
+    const chan=(arr)=>{ g.beginPath(); let st=false;
+      for(let i=a;i<=b;i++){ if(arr[i]==null){st=false;continue;}
+        const x=xOf(i,W),y=yOf(arr[i]); st?g.lineTo(x,y):g.moveTo(x,y); st=true; }
+      g.stroke(); };
+    g.strokeStyle="rgba(92,106,121,.75)"; g.lineWidth=1.1;
+    chan(D.donHi); chan(D.donLo);
+
+    // günlük mumlar (yeşil=yükseliş, kırmızı=düşüş)
+    const bw2=Math.max(2,(W-PAD.l-PAD.r)/Math.max(1,b-a)*0.62);
+    for(let i=a;i<=b;i++){
+      const x=xOf(i,W), up=D.c[i]>=D.o[i];
+      g.strokeStyle=g.fillStyle= up?"#1e8e4e":"#c0392b";
+      g.lineWidth=1;
+      g.beginPath(); g.moveTo(x,yOf(D.h[i])); g.lineTo(x,yOf(D.l[i])); g.stroke();
+      const y1=yOf(Math.max(D.o[i],D.c[i])), y2=yOf(Math.min(D.o[i],D.c[i]));
+      g.fillRect(x-bw2/2, y1, bw2, Math.max(1,y2-y1));
+    }
 
     // AL / SAT balonları
     const balloon=(x,y,txt,color,up)=>{
@@ -831,9 +856,17 @@ const MGB = (() => {
     };
     for(const ep of D.episodes){
       if(ep.entryIdx>=a&&ep.entryIdx<=b)
-        balloon(xOf(ep.entryIdx,W),yOf(D.c[ep.entryIdx])+6,"AL","#2f6f44",true);
+        balloon(xOf(ep.entryIdx,W),yOf(D.l[ep.entryIdx])+4,"AL","#2f6f44",true);
       if(ep.exitIdx!=null&&ep.exitIdx>=a&&ep.exitIdx<=b)
-        balloon(xOf(ep.exitIdx,W),yOf(D.c[ep.exitIdx])-6,"SAT","#c0392b",false);
+        balloon(xOf(ep.exitIdx,W),yOf(D.h[ep.exitIdx])-4,"SAT","#c0392b",false);
+      (ep.tpHitIdx||[]).forEach((hi,k)=>{
+        if(hi==null||hi<a||hi>b) return;
+        const x=xOf(hi,W), y=yOf(D.h[hi])-6;
+        g.fillStyle="#8e44ad"; g.font="bold 9px system-ui"; g.textAlign="center";
+        g.beginPath(); g.moveTo(x,y+4); g.lineTo(x-4,y-3); g.lineTo(x+4,y-3);
+        g.closePath(); g.fill();
+        g.fillText("KS"+(k+1), x, y-6);
+      });
     }
     if(ST.tipIdx!=null) drawTip(W,H,yOf);
   }
@@ -853,6 +886,7 @@ const MGB = (() => {
     if(ep){
       const dist=ep.trail[i]!=null?((D.c[i]/ep.trail[i]-1)*100):null;
       html+=`<br>Giriş: ${fmtP(ep.entry)} (${D.t[ep.entryIdx]})`;
+      if(ep.exitReason) html+=`<br>Çıkış nedeni: ${ep.exitReason}`;
       ep.tps.forEach((tp,k)=>{
         const pct=((tp/D.c[i]-1)*100);
         html+=`<br>TP${k+1}: ${fmtP(tp)} ${ep.tpHit[k]?"<b>✓</b>":`(%${pct.toFixed(1)})`}`;
@@ -954,9 +988,11 @@ const MGB = (() => {
     }
     const eps=compute(bars).episodes;
     const open=eps.find(ep=>ep.exitIdx==null);
+    const last=eps[eps.length-1];
     status.textContent=`${normSymbol(sym)} · ${bars.c.length} gün · `+
       (open?`AKTİF sinyal (giriş ${fmtP(open.entry)}, ${bars.t[open.entryIdx]})`
-           :`${eps.length} tamamlanmış episod`)+" · MGB-4S deneyseldir";
+           :(last?`son SAT: ${bars.t[last.exitIdx]} (${last.exitReason})`
+                 :"sinyal yok"))+" · MGB-4S deneyseldir";
     setup(normSymbol(sym), bars);
   }
   bindEvents();
@@ -974,7 +1010,24 @@ function renderDetail(){
   if(!sym && S.candidateRows.length) sym=normSymbol(candidateRowsForDisplay()[0]["Hisse"]);
   if(!sym){ out.innerHTML='<div class="muted">Detay için sembol gir.</div>'; return; }
   const row=S.rowBySymbol[sym];
-  if(!row){ out.innerHTML=`<div class="muted">${esc(sym)} için aday artifact'inde detay yok.</div>`; return; }
+  if(!row){
+    // BIST evreninden herhangi bir sembol: metrik kartlar yalnız günün aday
+    // artifact'inde olanlar için mevcut; grafik + bilanço yine de çizilir.
+    let basic=`<div><b>${esc(sym)}</b> <span class="muted">bugünkü aday listesinde değil — temel kartlar aday artifact'inden gelir</span></div>`;
+    const bundleBars=S.chartBundle && (S.chartBundle.bars||{})[sym];
+    if(bundleBars && bundleBars.c.length>1){
+      const n=bundleBars.c.length, last=bundleBars.c[n-1], prev=bundleBars.c[n-2];
+      const p20=bundleBars.c[Math.max(0,n-21)];
+      basic+=`<div class="metric-grid">
+        <div class="metric"><div class="label">Son kapanış</div><div class="value">${fmt(last)}</div><div class="muted">${esc(bundleBars.t[n-1])}</div></div>
+        <div class="metric"><div class="label">Günlük</div><div class="value ${signCls((last/prev-1)*100)}">%${fmt((last/prev-1)*100,1)}</div><div class="muted">20g %${fmt((last/p20-1)*100,1)}</div></div>
+      </div>`;
+    }
+    out.innerHTML=basic;
+    MGB.render(sym);
+    renderFin(sym);
+    return;
+  }
   const quote=priceFor(sym);
   const chg=row["Günlük Değişim %"];
   let html=`<div><b>${esc(sym)}</b> <span class="muted">${esc(detailField(row,"Şirket Adı",""))}</span>
@@ -1007,6 +1060,40 @@ function renderDetail(){
   if(note) html += `<div class="detail-note">${esc(note)}</div>`;
   out.innerHTML=html;
   MGB.render(sym);
+  renderFin(sym);
+}
+
+/* Son Bilanço bölümü (bundle.fin — otomatik fundamentals tarihçesinin son dönemi) */
+function fmtTL(x){
+  const n=num(x); if(n===null) return "-";
+  const abs=Math.abs(n);
+  if(abs>=1e9) return (n/1e9).toLocaleString("tr-TR",{maximumFractionDigits:2})+" mlr";
+  if(abs>=1e6) return (n/1e6).toLocaleString("tr-TR",{maximumFractionDigits:1})+" mn";
+  if(abs>=1e3) return (n/1e3).toLocaleString("tr-TR",{maximumFractionDigits:0})+" bin";
+  return fmt(n,0);
+}
+function renderFin(sym){
+  const out=document.getElementById("finOut");
+  if(!out) return;
+  const fin=S.chartBundle && (S.chartBundle.fin||{})[normSymbol(sym)];
+  if(!fin){ out.innerHTML='<div class="muted" style="margin-top:8px">Son bilanço verisi bulunamadı.</div>'; return; }
+  const g=(v,d)=>{const n=num(v); return n===null?"-":"%"+fmt(n,d??1);};
+  let html=`<h2 style="margin-top:12px">Son Bilanço <span class="pill">${esc(fin.period_label||"?")}</span></h2>`;
+  html+='<div class="detail-grid">';
+  [
+    ["Ciro (yıllıklandırılmış)", fmtTL(fin.revenue)+" TL"+(num(fin.revenue_growth)!==null?`  (büyüme ${g(fin.revenue_growth)})`:"")],
+    ["Net kâr", fmtTL(fin.net_income)+" TL"+(num(fin.net_income_growth)!==null?`  (büyüme ${g(fin.net_income_growth)})`:"")],
+    ["FAVÖK", fmtTL(fin.ebitda)+" TL"],
+    ["Özkaynak", fmtTL(fin.equity_spot)+" TL"],
+    ["Toplam varlık", fmtTL(fin.total_assets)+" TL"],
+    ["Net borç", fmtTL(fin.net_debt)+" TL"],
+    ["Piyasa değeri", fmtTL(fin.market_cap)+" TL"],
+    ["Net marj / ROE", `${g(fin.net_margin)} / ${g(fin.roe)}`],
+    ["F/K / PD-DD", `${fmt(fin.pe,1)} / ${fmt(fin.pb,2)}`],
+    ["Açıklanma", String(fin.announcement||"-").slice(0,10)],
+  ].forEach(([k,v])=>{ html+=renderDetailRow(k,v); });
+  html+='</div><div class="muted" style="margin-top:4px">Kaynak: otomatik fundamentals tarihçesi (akşam üretiminde tazelenir).</div>';
+  out.innerHTML=html;
 }
 
 function saveSetup(){
