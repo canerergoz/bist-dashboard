@@ -90,6 +90,19 @@
     .form-grid{grid-template-columns:1fr;}
     .metric-grid{grid-template-columns:1fr 1fr;}
   }
+  /* --- MGB-4S grafik --- */
+  .chart-wrap{position:relative;margin-top:10px;}
+  #mgbCanvas{width:100%;height:340px;display:block;border:1px solid var(--line);
+             border-radius:8px;background:#fdfefe;touch-action:none;}
+  .chart-tip{position:absolute;pointer-events:none;background:rgba(34,48,60,.94);
+             color:#fff;border-radius:8px;padding:8px 10px;font-size:11px;
+             line-height:1.45;max-width:230px;display:none;z-index:6;}
+  .chart-tip b{color:#9fd3a8;}
+  .chart-legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:10px;color:var(--sub);}
+  .chart-legend span::before{content:"—";margin-right:3px;font-weight:900;}
+  .lg-price::before{color:#22303c;} .lg-tp::before{color:#2980b9;}
+  .lg-stop::before{color:#c0392b;} .lg-sq::before{color:#b8860b;}
+  .lg-al::before{content:"▲";color:#2f6f44;} .lg-sat::before{content:"▼";color:#c0392b;}
   .hide{display:none!important;}
 </style>
 </head>
@@ -174,6 +187,25 @@
         <button class="btn small" onclick="renderDetail()">Aç</button>
       </div>
       <div id="detailOut" style="margin-top:10px"></div>
+    </div>
+    <div class="card" id="chartCard">
+      <h2>MGB-4S Grafiği <span class="pill warn">deneysel gösterge</span></h2>
+      <div class="muted" id="mgbStatus">grafik verisi bekleniyor…</div>
+      <div class="chart-wrap">
+        <canvas id="mgbCanvas"></canvas>
+        <div class="chart-tip" id="mgbTip"></div>
+      </div>
+      <div class="chart-legend">
+        <span class="lg-price">Fiyat</span><span class="lg-sq">Sıkışma bandı</span>
+        <span class="lg-al">AL</span><span class="lg-sat">SAT</span>
+        <span class="lg-tp">TP1-TP4</span><span class="lg-stop">İz süren stop</span>
+      </div>
+      <p class="muted" style="margin-top:6px">
+        MGB-4S: 20-bar Donchian/Bollinger sıkışması kırılımında AL; ATR tabanlı 4
+        kâr hedefi + iz süren stop. Kaydır: sürükle · Yakınlaştır: iki parmak/tekerlek ·
+        Dokun: özet. Bu görsel katman merkezi skorlamadan BAĞIMSIZDIR; yatırım
+        tavsiyesi değildir.
+      </p>
     </div>
   </section>
 </main>
@@ -531,7 +563,7 @@ function portfolioTotals(positions){
 }
 function renderPortfolioTable(positions, editable){
   if(!positions.length) return `<div class="muted">Henüz pozisyon yok.</div>`;
-  let html='<div class="table-wrap"><table><tr><th>Hisse</th><th class=num>Adet</th><th class=num>Fiyat</th><th class=num>Değer</th><th class=num>K/Z</th>';
+  let html='<div class="table-wrap"><table><tr><th>Hisse</th><th class=num>Adet</th><th class=num>Maliyet</th><th class=num>Fiyat</th><th class=num>Değer</th><th class=num>K/Z</th>';
   html += editable ? "<th></th></tr>" : "</tr>";
   positions.forEach((p,i)=>{
     const sym=normSymbol(p.symbol);
@@ -540,8 +572,9 @@ function renderPortfolioTable(positions, editable){
     const qty=num(p.quantity), avg=num(p.avg_cost);
     const value=(price!==null && qty!==null)?price*qty:null;
     const pnl=(price!==null && avg!==null)?((price/avg-1)*100):null;
-    html+=`<tr><td><b>${esc(sym)}</b><span class=cell-sub>M: ${fmt(avg)}</span></td>
+    html+=`<tr><td><b>${esc(sym)}</b></td>
       <td class=num>${fmt(qty,0)}</td>
+      <td class=num>${fmt(avg)}</td>
       <td class=num>${price!==null?fmt(price):"-"}<span class=cell-sub>${quote?esc(quote.source):"fiyat yok"}</span></td>
       <td class=num>${value!==null?fmt(value):"-"}</td>
       <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
@@ -555,7 +588,7 @@ function renderPortfolioGroup(title, positions, editable){
   const pnlText=totals.pnl!==null ? ` | K/Z: <b class="${signCls(totals.pnl)}">%${fmt(totals.pnl,1)}</b>` : "";
   const pricedText=positions.length ? ` | fiyatlı: ${totals.priced}/${positions.length}` : "";
   return `<div class="portfolio-block">
-    <div class="portfolio-head"><h3>${esc(title)}</h3><div class="muted">Toplam: <b>${fmt(totals.total)} TL</b>${pnlText}${pricedText}</div></div>
+    <div class="portfolio-head"><h3>${esc(title)}</h3><div class="muted">Piyasa: <b>${fmt(totals.total)} TL</b> | Maliyet: <b>${fmt(totals.cost)} TL</b>${pnlText}${pricedText}</div></div>
     ${renderPortfolioTable(positions, editable)}
   </div>`;
 }
@@ -619,6 +652,317 @@ function detailField(row, key, fallback="-"){ const value=row ? row[key] : null;
 function renderDetailRow(label, value){
   return `<div class="detail-row"><div class="k">${esc(label)}</div><div>${esc(value)}</div></div>`;
 }
+
+/* ================= MGB-4S Hibrit Göstergesi =================
+   HESAP MOTORU (saf fonksiyonlar; merkezi skorlamadan BAĞIMSIZ görsel katman):
+   - BB(20,2) bant-genişliği; sıkışma = genişlik son 60 barın alt %25'inde.
+   - Donchian(20): önceki 20-bar tepesinin üstünde kapanış + yakın sıkışma → AL.
+   - Girişte ATR(14, Wilder) ile TP1..TP4 = giriş + 1..4×ATR.
+   - İz süren stop (chandelier): son ≤22 bar kapanış tepesi − 3×ATR, yalnız yükselir.
+   - Kapanış stopun altına inince SAT (episod biter).                       */
+const MGB = (() => {
+  const CFG = {don:20, bb:20, bbK:2, sqWin:60, sqPct:0.25, sqLag:5,
+               atr:14, tpMult:[1,2,3,4], chLook:22, chMult:3};
+
+  function wilderATR(h,l,c){
+    const n=CFG.atr, atr=new Array(c.length).fill(null);
+    if(c.length<=n) return atr;
+    let sum=0;
+    const tr=i=>Math.max(h[i]-l[i], Math.abs(h[i]-c[i-1]), Math.abs(l[i]-c[i-1]));
+    for(let i=1;i<=n;i++) sum+=tr(i);
+    atr[n]=sum/n;
+    for(let i=n+1;i<c.length;i++) atr[i]=(atr[i-1]*(n-1)+tr(i))/n;
+    return atr;
+  }
+  function compute(bars){
+    const {t,h,l,c}=bars, n=c.length;
+    const atr=wilderATR(h,l,c);
+    const bw=new Array(n).fill(null), squeeze=new Array(n).fill(false),
+          donHi=new Array(n).fill(null);
+    for(let i=0;i<n;i++){
+      if(i>=CFG.bb-1){
+        let s=0; for(let j=i-CFG.bb+1;j<=i;j++) s+=c[j];
+        const m=s/CFG.bb; let v=0;
+        for(let j=i-CFG.bb+1;j<=i;j++) v+=(c[j]-m)*(c[j]-m);
+        const sd=Math.sqrt(v/CFG.bb);
+        if(m>0) bw[i]=(2*CFG.bbK*sd)/m;
+      }
+      if(i>=CFG.don-1){
+        let mx=-Infinity; for(let j=i-CFG.don+1;j<=i;j++) mx=Math.max(mx,h[j]);
+        donHi[i]=mx;
+      }
+    }
+    for(let i=0;i<n;i++){
+      if(bw[i]===null) continue;
+      const win=[]; for(let j=Math.max(0,i-CFG.sqWin+1);j<=i;j++) if(bw[j]!==null) win.push(bw[j]);
+      if(win.length<30) continue;
+      win.sort((a,b)=>a-b);
+      squeeze[i] = bw[i] <= win[Math.floor(win.length*CFG.sqPct)];
+    }
+    const episodes=[]; let ep=null;
+    for(let i=1;i<n;i++){
+      if(!ep){
+        if(donHi[i-1]===null || atr[i]===null) continue;
+        let recentSq=false;
+        for(let j=Math.max(0,i-CFG.sqLag);j<i;j++) if(squeeze[j]){recentSq=true;break;}
+        if(recentSq && c[i]>donHi[i-1]){
+          const entry=c[i], a=atr[i];
+          ep={entryIdx:i, entry:entry, atr:a,
+              tps:CFG.tpMult.map(k=>entry+k*a),
+              tpHit:[false,false,false,false],
+              trail:[], exitIdx:null};
+          ep.trail[i]=entry-CFG.chMult*a;
+        }
+      } else {
+        let hiC=-Infinity;
+        for(let j=Math.max(ep.entryIdx,i-CFG.chLook+1);j<=i;j++) hiC=Math.max(hiC,c[j]);
+        const raw=hiC-CFG.chMult*(atr[i]??ep.atr);
+        ep.trail[i]=Math.max(ep.trail[i-1]??-Infinity, raw);
+        ep.tps.forEach((tp,k)=>{ if(h[i]>=tp) ep.tpHit[k]=true; });
+        if(c[i]<ep.trail[i]){ ep.exitIdx=i; episodes.push(ep); ep=null; }
+      }
+    }
+    if(ep) episodes.push(ep);           // hâlâ açık pozisyon
+    return {t,h,l,c,atr,squeeze,episodes};
+  }
+
+  /* --------------- ÇİZİM + ETKİLEŞİM --------------- */
+  const ST={sym:null, data:null, view:null, drag:null, pinch:null, tipIdx:null};
+  const PAD={l:8,r:56,t:10,b:22};
+  const $=id=>document.getElementById(id);
+
+  function fmtP(x){ return Number(x).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+
+  function setup(sym, bars){
+    ST.sym=sym; ST.data=compute(bars);
+    const n=bars.c.length;
+    ST.view={a:Math.max(0,n-90), b:n-1};   // açılışta son ~90 bar
+    ST.tipIdx=null;
+    draw();
+  }
+  function xOf(i,W){ const {a,b}=ST.view;
+    return PAD.l+(W-PAD.l-PAD.r)*((i-a)/Math.max(1,b-a)); }
+  function iOf(x,W){ const {a,b}=ST.view;
+    return Math.round(a+(x-PAD.l)/(W-PAD.l-PAD.r)*(b-a)); }
+
+  function draw(){
+    const cv=$("mgbCanvas"); if(!cv||!ST.data) return;
+    const dpr=window.devicePixelRatio||1;
+    const W=cv.clientWidth, H=cv.clientHeight;
+    cv.width=W*dpr; cv.height=H*dpr;
+    const g=cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0);
+    g.clearRect(0,0,W,H);
+    const D=ST.data, {a,b}=ST.view;
+    let lo=Infinity, hi=-Infinity;
+    for(let i=a;i<=b;i++){ lo=Math.min(lo,D.l[i]); hi=Math.max(hi,D.h[i]); }
+    for(const ep of D.episodes){
+      const end=ep.exitIdx??(D.c.length-1);
+      if(end>=a && ep.entryIdx<=b){
+        hi=Math.max(hi,ep.tps[3]);
+        for(let i=Math.max(a,ep.entryIdx);i<=Math.min(b,end);i++)
+          if(ep.trail[i]!=null) lo=Math.min(lo,ep.trail[i]);
+      }
+    }
+    const pad=(hi-lo)*0.06||1; lo-=pad; hi+=pad;
+    const yOf=v=>PAD.t+(H-PAD.t-PAD.b)*(1-(v-lo)/(hi-lo));
+
+    // sıkışma bantları (sarımsı dikey şerit)
+    g.fillStyle="rgba(184,134,11,.10)";
+    for(let i=a;i<=b;i++) if(D.squeeze[i])
+      g.fillRect(xOf(i,W)-((W-PAD.l-PAD.r)/(b-a))/2,PAD.t,
+                 (W-PAD.l-PAD.r)/Math.max(1,b-a)+1,H-PAD.t-PAD.b);
+
+    // yatay kılavuz + eksen etiketleri
+    g.strokeStyle="#eceff2"; g.fillStyle="#8a97a3"; g.font="10px system-ui";
+    g.textAlign="left";
+    for(let k=0;k<=4;k++){
+      const v=lo+(hi-lo)*k/4, y=yOf(v);
+      g.beginPath(); g.moveTo(PAD.l,y); g.lineTo(W-PAD.r,y); g.stroke();
+      g.fillText(fmtP(v),W-PAD.r+4,y+3);
+    }
+    g.textAlign="center";
+    const step=Math.max(1,Math.round((b-a)/5));
+    for(let i=a;i<=b;i+=step)
+      g.fillText((D.t[i]||"").slice(5),xOf(i,W),H-7);
+
+    // episodlar: TP çizgileri + iz süren stop
+    for(const ep of D.episodes){
+      const end=ep.exitIdx??(D.c.length-1);
+      if(end<a||ep.entryIdx>b) continue;
+      const x0=Math.max(PAD.l,xOf(ep.entryIdx,W));
+      ep.tps.forEach((tp,k)=>{
+        const y=yOf(tp); if(y<PAD.t||y>H-PAD.b) return;
+        g.setLineDash([5,4]);
+        g.strokeStyle=ep.tpHit[k]?"rgba(47,111,68,.9)":"rgba(41,128,185,.55)";
+        g.lineWidth=ep.tpHit[k]?1.6:1;
+        g.beginPath(); g.moveTo(x0,y); g.lineTo(W-PAD.r,y); g.stroke();
+        g.setLineDash([]);
+        g.fillStyle=ep.tpHit[k]?"#2f6f44":"#2980b9";
+        g.textAlign="left"; g.font="9px system-ui";
+        g.fillText(`TP${k+1}${ep.tpHit[k]?" ✓":""}`,W-PAD.r+4,y-11+3);
+      });
+      g.setLineDash([3,3]); g.strokeStyle="#c0392b"; g.lineWidth=1.4;
+      g.beginPath(); let started=false;
+      for(let i=Math.max(a,ep.entryIdx);i<=Math.min(b,end);i++){
+        if(ep.trail[i]==null) continue;
+        const x=xOf(i,W), y=yOf(ep.trail[i]);
+        started?g.lineTo(x,y):g.moveTo(x,y); started=true;
+      }
+      g.stroke(); g.setLineDash([]);
+    }
+
+    // fiyat çizgisi
+    g.strokeStyle="#22303c"; g.lineWidth=1.6; g.beginPath();
+    for(let i=a;i<=b;i++){ const x=xOf(i,W),y=yOf(D.c[i]);
+      i===a?g.moveTo(x,y):g.lineTo(x,y); }
+    g.stroke();
+
+    // AL / SAT balonları
+    const balloon=(x,y,txt,color,up)=>{
+      g.fillStyle=color;
+      g.beginPath();
+      g.moveTo(x,y);
+      g.lineTo(x-6,up?y+10:y-10); g.lineTo(x+6,up?y+10:y-10);
+      g.closePath(); g.fill();
+      const by=up?y+22:y-22;
+      g.beginPath(); g.roundRect(x-15,by-9,30,16,7); g.fill();
+      g.fillStyle="#fff"; g.font="bold 9px system-ui"; g.textAlign="center";
+      g.fillText(txt,x,by+3);
+    };
+    for(const ep of D.episodes){
+      if(ep.entryIdx>=a&&ep.entryIdx<=b)
+        balloon(xOf(ep.entryIdx,W),yOf(D.c[ep.entryIdx])+6,"AL","#2f6f44",true);
+      if(ep.exitIdx!=null&&ep.exitIdx>=a&&ep.exitIdx<=b)
+        balloon(xOf(ep.exitIdx,W),yOf(D.c[ep.exitIdx])-6,"SAT","#c0392b",false);
+    }
+    if(ST.tipIdx!=null) drawTip(W,H,yOf);
+  }
+
+  function activeEpisodeAt(i){
+    for(const ep of ST.data.episodes){
+      const end=ep.exitIdx??(ST.data.c.length-1);
+      if(i>=ep.entryIdx&&i<=end) return ep;
+    }
+    return null;
+  }
+  function drawTip(W,H,yOf){
+    const i=ST.tipIdx, D=ST.data, tip=$("mgbTip");
+    const ep=activeEpisodeAt(i);
+    let html=`<b>${ST.sym}</b> ${D.t[i]}<br>Kapanış: <b>${fmtP(D.c[i])}</b> `+
+             `(A:${fmtP(D.l[i])} / Y:${fmtP(D.h[i])})`;
+    if(ep){
+      const dist=ep.trail[i]!=null?((D.c[i]/ep.trail[i]-1)*100):null;
+      html+=`<br>Giriş: ${fmtP(ep.entry)} (${D.t[ep.entryIdx]})`;
+      ep.tps.forEach((tp,k)=>{
+        const pct=((tp/D.c[i]-1)*100);
+        html+=`<br>TP${k+1}: ${fmtP(tp)} ${ep.tpHit[k]?"<b>✓</b>":`(%${pct.toFixed(1)})`}`;
+      });
+      if(dist!=null) html+=`<br>Stop: ${fmtP(ep.trail[i])} (−%${dist.toFixed(1)} mesafe)`;
+    } else if(D.squeeze[i]) html+="<br><i>Sıkışma bandı içinde</i>";
+    tip.innerHTML=html; tip.style.display="block";
+    const cv=$("mgbCanvas"), x=xOf(i,cv.clientWidth);
+    tip.style.left=Math.min(Math.max(4,x-60),cv.clientWidth-170)+"px";
+    tip.style.top="12px";
+    // dikey işaret çizgisi
+    const g=cv.getContext("2d");
+    g.strokeStyle="rgba(41,128,185,.5)"; g.setLineDash([2,3]);
+    g.beginPath(); g.moveTo(x,PAD.t); g.lineTo(x,cv.clientHeight-PAD.b); g.stroke();
+    g.setLineDash([]);
+  }
+
+  function clampView(){
+    const n=ST.data.c.length, span=ST.view.b-ST.view.a;
+    if(span<15){ ST.view.b=Math.min(n-1,ST.view.a+15); }
+    if(ST.view.b-ST.view.a>n-1){ ST.view.a=0; ST.view.b=n-1; }
+    if(ST.view.a<0){ ST.view.b-=ST.view.a; ST.view.a=0; }
+    if(ST.view.b>n-1){ ST.view.a-=ST.view.b-(n-1); ST.view.b=n-1;
+      ST.view.a=Math.max(0,ST.view.a); }
+  }
+  function zoom(factor, centerX){
+    const cv=$("mgbCanvas"), W=cv.clientWidth;
+    const ci=iOf(centerX,W), {a,b}=ST.view;
+    ST.view.a=Math.round(ci-(ci-a)*factor);
+    ST.view.b=Math.round(ci+(b-ci)*factor);
+    clampView(); ST.tipIdx=null; $("mgbTip").style.display="none"; draw();
+  }
+  function bindEvents(){
+    const cv=$("mgbCanvas");
+    const pts=new Map();
+    cv.addEventListener("pointerdown",e=>{
+      cv.setPointerCapture(e.pointerId);
+      pts.set(e.pointerId,{x:e.offsetX,y:e.offsetY});
+      if(pts.size===1) ST.drag={x:e.offsetX, a:ST.view.a, b:ST.view.b, moved:false};
+      if(pts.size===2){ ST.drag=null;
+        const [p1,p2]=[...pts.values()];
+        ST.pinch={d:Math.abs(p1.x-p2.x)||1, a:ST.view.a, b:ST.view.b,
+                  cx:(p1.x+p2.x)/2}; }
+    });
+    cv.addEventListener("pointermove",e=>{
+      if(!pts.has(e.pointerId)) return;
+      pts.set(e.pointerId,{x:e.offsetX,y:e.offsetY});
+      if(pts.size===1&&ST.drag){
+        const dx=e.offsetX-ST.drag.x;
+        if(Math.abs(dx)>4) ST.drag.moved=true;
+        const span=ST.drag.b-ST.drag.a;
+        const shift=Math.round(-dx/(cv.clientWidth-PAD.l-PAD.r)*span);
+        ST.view.a=ST.drag.a+shift; ST.view.b=ST.drag.b+shift;
+        clampView(); draw();
+      } else if(pts.size===2&&ST.pinch){
+        const [p1,p2]=[...pts.values()];
+        const d=Math.abs(p1.x-p2.x)||1;
+        const f=ST.pinch.d/d;
+        const span=ST.pinch.b-ST.pinch.a;
+        const ci=iOf(ST.pinch.cx,cv.clientWidth);
+        ST.view.a=Math.round(ci-(ci-ST.pinch.a)*f);
+        ST.view.b=ST.view.a+Math.round(span*f);
+        clampView(); draw();
+      }
+    });
+    const up=e=>{
+      if(pts.size===1&&ST.drag&&!ST.drag.moved){
+        ST.tipIdx=Math.max(ST.view.a,Math.min(ST.view.b,iOf(e.offsetX,cv.clientWidth)));
+        draw();
+      }
+      pts.delete(e.pointerId);
+      if(pts.size<2) ST.pinch=null;
+      if(pts.size<1) ST.drag=null;
+    };
+    cv.addEventListener("pointerup",up);
+    cv.addEventListener("pointercancel",up);
+    cv.addEventListener("wheel",e=>{ e.preventDefault();
+      zoom(e.deltaY>0?1.15:0.87, e.offsetX); },{passive:false});
+    window.addEventListener("resize",()=>{ if(ST.data) draw(); });
+  }
+
+  async function render(sym){
+    const status=$("mgbStatus");
+    if(!sym){ status.textContent="Sembol seçilince grafik çizilir."; return; }
+    try{
+      if(!S.chartBundle){
+        status.textContent="grafik verisi yükleniyor…";
+        S.chartBundle=await readJson("data/webapp_chart_bundle.json");
+      }
+    }catch(e){ status.textContent="Grafik verisi okunamadı: "+e.message; return; }
+    if(!S.chartBundle){
+      status.textContent="Grafik verisi henüz üretilmedi — ilk paket bu akşamki üretimden sonra oluşur.";
+      return;
+    }
+    const bars=(S.chartBundle.bars||{})[normSymbol(sym)];
+    if(!bars){
+      status.textContent=`${normSymbol(sym)} için grafik verisi paket dışında (aday/portföy sembolleri paketlenir).`;
+      return;
+    }
+    const eps=compute(bars).episodes;
+    const open=eps.find(ep=>ep.exitIdx==null);
+    status.textContent=`${normSymbol(sym)} · ${bars.c.length} gün · `+
+      (open?`AKTİF sinyal (giriş ${fmtP(open.entry)}, ${bars.t[open.entryIdx]})`
+           :`${eps.length} tamamlanmış episod`)+" · MGB-4S deneyseldir";
+    setup(normSymbol(sym), bars);
+  }
+  bindEvents();
+  return {render};
+})();
+
 function selectDetail(symbol){
   document.getElementById("detailSym").value=normSymbol(symbol);
   show("detay");
@@ -662,6 +1006,7 @@ function renderDetail(){
   const note=detailField(row,"Kısa Vade Notu","");
   if(note) html += `<div class="detail-note">${esc(note)}</div>`;
   out.innerHTML=html;
+  MGB.render(sym);
 }
 
 function saveSetup(){
