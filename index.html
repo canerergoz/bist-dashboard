@@ -33,10 +33,16 @@
   .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
         padding:12px;margin-bottom:12px;}
   .card h2{font-size:14px;margin-bottom:8px;letter-spacing:0;}
-  .table-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  /* Uzun tablolarda başlık satırı donar (kullanıcı isteği 2026-07-06):
+     dikey kaydırma kabın içinde kalır ki position:sticky viewport yerine
+     kaba yapışsın — sayfa-gövdesi kaydırmasında sticky, overflow-x'li
+     sarmalayıcı yüzünden çalışmaz. */
+  .table-wrap{width:100%;overflow:auto;max-height:72vh;-webkit-overflow-scrolling:touch;}
   table{width:100%;border-collapse:collapse;font-size:13px;min-width:420px;}
   th{color:var(--sub);font-weight:600;text-align:left;padding:6px 4px;
-     border-bottom:1px solid var(--line);font-size:11px;white-space:nowrap;}
+     border-bottom:1px solid var(--line);font-size:11px;white-space:nowrap;
+     position:sticky;top:0;background:var(--card);z-index:2;
+     box-shadow:0 1px 0 var(--line);}
   td{padding:7px 4px;border-bottom:1px solid var(--line);vertical-align:top;}
   tr:last-child td{border-bottom:none;}
   .clickable{cursor:pointer;}
@@ -143,6 +149,7 @@
     <button id="nav-portfoy" onclick="show('portfoy')">Portföy</button>
     <button id="nav-detay" onclick="show('detay')">Detay</button>
     <button id="nav-sektor" onclick="show('sektor')">Sektör</button>
+    <button id="nav-hisseler" onclick="show('hisseler')">Hisseler</button>
   </nav>
 </header>
 <main>
@@ -241,6 +248,36 @@
       </p>
       <div id="detailOut" style="margin-top:10px"></div>
       <div id="finOut" style="margin-top:4px"></div>
+      <details class="karne-detay">
+        <summary>Bu veriler ne anlama geliyor? (kısa sözlük)</summary>
+        <div class="detail-grid" style="font-size:12px">
+          <div class="detail-row"><div class="k">F/K</div><div>Fiyat/Kazanç: şirketin piyasa değerinin yıllık net kârına oranı. "Kârının kaç katına satılıyor?" Düşükse ucuz OLABİLİR ama tek başına yetmez — sektörüyle kıyasla. Şirket zarardaysa F/K hesaplanmaz (boş kalması normaldir).</div></div>
+          <div class="detail-row"><div class="k">PD/DD</div><div>Piyasa Değeri / Defter Değeri: şirket, muhasebedeki özkaynağının kaç katına satılıyor? 1'in altı "defterinden ucuz" demek; ama zarar eden şirkette defter eriyebilir — yine sektörle birlikte oku.</div></div>
+          <div class="detail-row"><div class="k">FAVÖK</div><div>Faiz, Amortisman ve Vergi Öncesi Kâr: şirketin ANA işinden ürettiği kâr. Net kârdan farkı: kur farkı, faiz gibi işle ilgisiz kalemleri dışarıda bırakır. Bankalarda yapısal olarak hesaplanmaz.</div></div>
+          <div class="detail-row"><div class="k">Ciro</div><div>Satış geliri (burada son 12 ay toplamı). Büyüme oranı bir önceki yılın aynı dönemiyle kıyastır.</div></div>
+          <div class="detail-row"><div class="k">Net kâr</div><div>Her şey ödendikten sonra kalan (son 12 ay). Eksiyse şirket o dönemde zarar etmiş.</div></div>
+          <div class="detail-row"><div class="k">Özkaynak</div><div>Şirketin "kendi parası": varlıklar − borçlar. Eksi özkaynak ciddi bir uyarı işaretidir.</div></div>
+          <div class="detail-row"><div class="k">Net borç</div><div>Borçlar − kasadaki nakit. Eksi çıkması iyidir: kasadaki para borçtan fazla demek.</div></div>
+          <div class="detail-row"><div class="k">Net marj</div><div>100 TL satıştan kaç TL net kâr kaldığı. Sektörden sektöre çok değişir — market %2 ile yaşar, yazılımcı %20 ister.</div></div>
+          <div class="detail-row"><div class="k">ROE</div><div>Özkaynak kârlılığı: şirket, ortaklarının parasıyla yılda yüzde kaç kazanıyor? Uzun vadede mevduat/enflasyonun altındaysa ortak olmanın anlamı sorgulanır.</div></div>
+          <div class="detail-row"><div class="k">Piyasa değeri</div><div>Bugün şirketin TAMAMINI borsa fiyatından almanın bedeli: fiyat × pay adedi.</div></div>
+        </div>
+        <p class="muted" style="margin-top:6px">Hiçbir oran tek başına karar verdirmez; bu yüzden Sektör sekmesi aynı işi yapan şirketlerle kıyaslar. Yatırım tavsiyesi değildir.</p>
+      </details>
+    </div>
+  </section>
+
+  <section id="view-hisseler" class="hide">
+    <div class="card">
+      <h2>Tüm Hisseler</h2>
+      <input id="hisselerFilter" placeholder="Ara (sembol veya sektör)" oninput="renderHisseler()">
+      <div class="muted" id="hisselerMeta">yükleniyor…</div>
+      <div class="table-wrap"><table id="hisselerTable"></table></div>
+      <p class="muted" style="margin-top:6px">
+        Fiyatlar canlı DEĞİLDİR: çoğu satır bir önceki işlem gününün kapanışıdır
+        (akşam paketi); günün adayları için sabah taramasının fiyatı kullanılır ve
+        kaynak sütunda yazar. Satıra dokununca Detay açılır.
+      </p>
     </div>
   </section>
 
@@ -383,9 +420,9 @@ async function writeJson(path, obj, message){
 }
 
 function show(view){
-  for (const v of ["setup","adaylar","karne","portfoy","detay","sektor"])
+  for (const v of ["setup","adaylar","karne","portfoy","detay","sektor","hisseler"])
     document.getElementById("view-"+v).classList.toggle("hide", v!==view);
-  for (const v of ["adaylar","karne","portfoy","detay","sektor"]){
+  for (const v of ["adaylar","karne","portfoy","detay","sektor","hisseler"]){
     const b=document.getElementById("nav-"+v); if(b) b.classList.toggle("on", v===view);
   }
   if(view==="detay") renderDetail();
@@ -394,6 +431,7 @@ function show(view){
     if(!input.value) input.value=document.getElementById("detailSym").value;
     renderSector();
   }
+  if(view==="hisseler") renderHisseler();
 }
 function fmt(x, d){ const n=Number(x);
   return Number.isFinite(n) ? n.toLocaleString("tr-TR",{minimumFractionDigits:d??2,maximumFractionDigits:d??2}) : "-"; }
@@ -687,7 +725,7 @@ function pfPath(slug){ return `webapp/portfolios/${slugify(slug||S.profile)}.jso
 function portfolioTotals(positions){
   let total=0, cost=0, priced=0;
   for(const p of positions){
-    const quote=priceFor(p.symbol);
+    const quote=quoteOrBundle(p.symbol);
     const price=quote ? quote.price : null;
     const qty=num(p.quantity), avg=num(p.avg_cost);
     if(price!==null && qty!==null){ total += price*qty; priced++; }
@@ -701,7 +739,7 @@ function renderPortfolioTable(positions, editable){
   html += editable ? "<th></th></tr>" : "</tr>";
   positions.forEach((p,i)=>{
     const sym=normSymbol(p.symbol);
-    const quote=priceFor(sym);
+    const quote=quoteOrBundle(sym);
     const price=quote ? quote.price : null;
     const qty=num(p.quantity), avg=num(p.avg_cost);
     const value=(price!==null && qty!==null)?price*qty:null;
@@ -756,7 +794,7 @@ function updatePriceHint(){
   if(!el) return;
   const sym=normSymbol(document.getElementById("pfSym").value);
   if(!sym){ el.textContent=""; return; }
-  const quote=priceFor(sym);
+  const quote=quoteOrBundle(sym);
   el.textContent = quote ? `${sym} son fiyat: ${fmt(quote.price)} TL (${quote.source})` : `${sym} için repo verisinde fiyat bulunamadı.`;
 }
 function addPosition(){
@@ -1265,6 +1303,53 @@ function renderFin(sym){
   out.innerHTML=html;
 }
 
+/* ================= Hisseler sekmesi =================
+   Tam evren listesi (paket verisi). Fiyatlar canlı değil: paket = önceki
+   işlem gününün kapanışı; adaylar için sabah artifact fiyatı önceliklidir. */
+async function ensureBundle(){
+  if(!S.chartBundle) S.chartBundle=await readJson("data/webapp_chart_bundle.json");
+  return S.chartBundle;
+}
+function bundleQuote(symbol){
+  const sym=normSymbol(symbol);
+  const bars=S.chartBundle && (S.chartBundle.bars||{})[sym];
+  if(!bars || !bars.c || !bars.c.length) return null;
+  const n=bars.c.length;
+  return {price:bars.c[n-1], source:"kapanış (paket)", asOf:String(bars.t[n-1]||""),
+          prev:n>1?bars.c[n-2]:null};
+}
+function quoteOrBundle(symbol){ return priceFor(symbol) || bundleQuote(symbol); }
+async function renderHisseler(){
+  const meta=document.getElementById("hisselerMeta"), table=document.getElementById("hisselerTable");
+  if(!meta||!table) return;
+  try{ await ensureBundle(); }
+  catch(e){ meta.textContent="Veri okunamadı: "+e.message; return; }
+  const bars=(S.chartBundle&&S.chartBundle.bars)||{};
+  const fin=(S.chartBundle&&S.chartBundle.fin)||{};
+  const q=normSymbol(document.getElementById("hisselerFilter").value);
+  const rows=[];
+  for(const sym of Object.keys(bars)){
+    const sector=(fin[sym]&&fin[sym].sector)||"";
+    if(q && !sym.includes(q) && !sector.toUpperCase().includes(q)) continue;
+    const quote=quoteOrBundle(sym);
+    if(!quote) continue;
+    const b=bars[sym], n=b.c.length;
+    const chg=(n>1 && b.c[n-2])?((b.c[n-1]/b.c[n-2]-1)*100):null;
+    rows.push({sym, sector, price:quote.price, source:quote.source, chg});
+  }
+  rows.sort((a,b)=>a.sym.localeCompare(b.sym));
+  const lastDay=(()=>{const any=Object.values(bars)[0];return any?fmtDate(any.t[any.t.length-1]):"?";})();
+  meta.textContent=`${rows.length} hisse · paket kapanışı: ${lastDay}`;
+  let html="<tr><th>Hisse</th><th class=num>Fiyat</th><th class=num>Gün%</th><th>Sektör</th></tr>";
+  for(const r of rows){
+    html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td><b>${esc(r.sym)}</b><span class=cell-sub>${esc(r.source)}</span></td>`+
+      `<td class=num>${fmt(r.price)}</td>`+
+      `<td class="num ${signCls(r.chg)}">${r.chg!==null?fmt(r.chg,1):"-"}</td>`+
+      `<td class=muted>${esc(r.sector||"-")}</td></tr>`;
+  }
+  table.innerHTML=html;
+}
+
 /* ================= Sektör sekmesi =================
    Sektör-içi temel veri ısı tablosu (bundle.fin.sector — KAP haritasından).
    "Uygunluk" = mevcut yüzdeliklerin ortalaması; kalibre edilmemiş GÖRÜNTÜLEME
@@ -1317,8 +1402,8 @@ async function renderSector(){
   for(const r of rows){
     const isMe=r.sym===sym;
     const style=r.score!==null?` style="background:${heatColor(r.score)}"`:"";
-    const cls=r.score!==null?`heat${isMe?" me":""}`:"";
-    html+=`<tr class="${cls}"${style}><td>${isMe?"★ ":""}<b>${esc(r.sym)}</b></td>`+
+    const cls=`clickable ${r.score!==null?`heat${isMe?" me":""}`:""}`;
+    html+=`<tr class="${cls}"${style} onclick="selectDetail('${r.sym}')"><td>${isMe?"★ ":""}<b>${esc(r.sym)}</b></td>`+
       `<td class=num>${r.score!==null?r.score:"veri az"}</td>`+
       SECTOR_DIMS.map(([key,,,digits,isPct])=>{
         const v=r[key];
@@ -1370,6 +1455,10 @@ async function boot(){
   }catch(e){
     msg(e.message,"err");
   }
+  // Paket arka planda yüklenir ki portföy fiyatları (aday-dışı semboller
+  // dahil) Detay'a girmeden dolsun; hata sessiz geçilir (paket beslemesi
+  // opsiyonel katman).
+  ensureBundle().then(()=>{ renderPortfolio(); }).catch(()=>{});
 }
 boot();
 </script>
