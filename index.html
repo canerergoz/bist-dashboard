@@ -559,22 +559,36 @@ async function loadMarketData(){
 function candidateModeLabel(){
   const info=S.artifactInfo || {};
   if(info.mode==="V3_LIVE" || info.source==="V3") return "V3_LIVE";
+  if(info.mode==="V2_LIVE" || info.source==="V2") return "V2_LIVE";
+  if(info.mode==="LEGACY_LIVE" || info.source==="LEGACY") return "LEGACY_LIVE";
   if(info.computedV3) return "V3_UI_CALC";
   if(S.candidateRows.some(r=>num(r["V3 Skor"])!==null)) return "V3_VIEW";
   return info.mode || "";
 }
+function candidateSortBasis(){
+  const info=S.artifactInfo || {};
+  const mode=String(info.mode||"").toUpperCase();
+  const source=String(info.source||"").toUpperCase();
+  if(mode==="V3_LIVE" || source==="V3") return {rank:"V3 Sıra", score:"V3 Skor", label:"V3"};
+  if(mode==="V2_LIVE" || source==="V2") return {rank:"V2 Sıra", score:"V2 Skor", label:"V2"};
+  return {rank:"Legacy Sıra", score:"Karar Skoru", label:"legacy"};
+}
 function candidateRowsForDisplay(){
+  const basis=candidateSortBasis();
   return S.candidateRows.slice().sort((a,b)=>{
+    const ar=num(a[basis.rank]), br=num(b[basis.rank]);
+    if(ar!==null || br!==null) return (ar ?? 999999) - (br ?? 999999);
     const av3=num(a["V3 Sıra"]), bv3=num(b["V3 Sıra"]);
-    if(av3!==null || bv3!==null) return (av3 ?? 999999) - (bv3 ?? 999999);
+    if(basis.rank!=="V3 Sıra" && (av3!==null || bv3!==null)) return (av3 ?? 999999) - (bv3 ?? 999999);
     const av2=num(a["V2 Sıra"]), bv2=num(b["V2 Sıra"]);
-    if(av2!==null || bv2!==null) return (av2 ?? 999999) - (bv2 ?? 999999);
+    if(basis.rank!=="V2 Sıra" && (av2!==null || bv2!==null)) return (av2 ?? 999999) - (bv2 ?? 999999);
     return (num(a["Legacy Sıra"]) ?? 999999) - (num(b["Legacy Sıra"]) ?? 999999);
   });
 }
 function loadAdaylar(){
   const el=document.getElementById("adayTable"), meta=document.getElementById("adayMeta");
   const rows=candidateRowsForDisplay();
+  const basis=candidateSortBasis();
   const mode=candidateModeLabel();
   const pill=document.getElementById("adayMode");
   pill.textContent=mode; pill.classList.toggle("hide", !mode);
@@ -583,8 +597,8 @@ function loadAdaylar(){
   const rawStamp=String(S.artifactInfo.generated_at||S.artifactInfo.selected_at||"");
   const stamp=rawStamp?`${fmtDate(rawStamp)} ${rawStamp.slice(11,16)}`.trim():"";
   const artifactMode=S.artifactInfo.mode ? ` | artifact: ${S.artifactInfo.mode}` : "";
-  meta.textContent = `üretim: ${stamp || "?"} | ${rows.length} aday | sıralama: V3${artifactMode}`;
-  let html = "<tr><th>#</th><th>Hisse</th><th>Şirket</th><th class=num>Fiyat</th><th class=num>Gün%</th><th class=num>V3</th></tr>";
+  meta.textContent = `üretim: ${stamp || "?"} | ${rows.length} aday | sıralama: ${basis.label}${artifactMode}`;
+  let html = `<tr><th>#</th><th>Hisse</th><th>Şirket</th><th class=num>Fiyat</th><th class=num>Gün%</th><th class=num>${esc(basis.label)}</th></tr>`;
   rows.slice(0,15).forEach((r,i)=>{
     const chg=r["Günlük Değişim %"];
     const sym=normSymbol(r["Hisse"]);
@@ -592,7 +606,7 @@ function loadAdaylar(){
       <td class=muted>${esc(String(r["Şirket Adı"]||"").slice(0,20))}</td>
       <td class=num>${fmt(r["Fiyat"] ?? r["Kapanış"])}</td>
       <td class="num ${signCls(chg)}">${fmt(chg,1)}</td>
-      <td class=num>${fmt(r["V3 Skor"] ?? r["V2 Skor"] ?? r["Karar Skoru"],1)}</td></tr>`;
+      <td class=num>${fmt(r[basis.score] ?? r["V3 Skor"] ?? r["V2 Skor"] ?? r["Karar Skoru"],1)}</td></tr>`;
   });
   el.innerHTML = html;
 }
