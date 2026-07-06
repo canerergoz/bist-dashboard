@@ -48,6 +48,7 @@
   .clickable{cursor:pointer;}
   .clickable:active{background:#f0f4f7;}
   .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+  th.sortable{cursor:pointer;color:var(--acc);}
   .pos{color:var(--pos);font-weight:600;} .neg{color:var(--neg);font-weight:600;}
   .muted{color:var(--sub);font-size:11px;}
   .cell-sub{display:block;color:var(--sub);font-size:10px;margin-top:2px;white-space:nowrap;}
@@ -88,6 +89,9 @@
   .detail-row:last-child{border-bottom:none;}
   .detail-row .k{color:var(--sub);font-size:11px;font-weight:700;}
   .detail-note{font-size:12px;line-height:1.35;color:var(--ink);margin-top:8px;}
+  .detail-symbol-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center;}
+  .detail-symbol-row input{margin:0;}
+  #hisselerTable{min-width:620px;}
   @media (max-width:420px){
     main{padding:10px;}
     .card{padding:10px;}
@@ -220,10 +224,11 @@
 
   <section id="view-detay" class="hide">
     <div class="card">
-      <h2>Detay <span class="pill warn">MGB-4S deneysel</span></h2>
-      <div class="row">
-        <input id="detailSym" placeholder="Sembol (BIST evreninden herhangi biri)" style="margin:0" oninput="renderDetail()">
+      <h2><span id="detailHeadingText">Detay</span> <span class="pill warn">MGB-4S deneysel</span></h2>
+      <div class="detail-symbol-row">
+        <input id="detailSym" placeholder="Sembol (BIST evreninden herhangi biri)" oninput="detailSymbolEdited()">
         <button class="btn small" onclick="renderDetail()">Aç</button>
+        <button class="btn small gray" onclick="makeDefaultDetailSymbol()">Ana yap</button>
       </div>
       <div class="muted" id="mgbStatus" style="margin-top:8px">grafik verisi bekleniyor…</div>
       <div class="chart-wrap">
@@ -270,7 +275,7 @@
   <section id="view-hisseler" class="hide">
     <div class="card">
       <h2>Tüm Hisseler</h2>
-      <input id="hisselerFilter" placeholder="Ara (sembol veya sektör)" oninput="renderHisseler()">
+      <input id="hisselerFilter" placeholder="Ara (sembol, şirket veya sektör)" oninput="renderHisseler()">
       <div class="muted" id="hisselerMeta">yükleniyor…</div>
       <div class="table-wrap"><table id="hisselerTable"></table></div>
       <p class="muted" style="margin-top:6px">
@@ -310,6 +315,7 @@ const LS = {
   repo:"bist_repo",
   profile:"bist_profile",
   related:"bist_related_profiles",
+  defaultDetailSymbol:"bist_default_detail_symbol",
 };
 const S = {
   token: normalizeToken(localStorage.getItem(LS.token)),
@@ -322,6 +328,8 @@ const S = {
   positions: [],
   relatedPortfolios: [],
   artifactInfo: {},
+  hisselerSort: {key:"sym", dir:1},
+  detailAutoFilled: false,
 };
 
 function msg(text, kind){ const el=document.getElementById("msg");
@@ -367,6 +375,19 @@ function githubContentsUrl(path){
   return `https://api.github.com/repos/${repo}/contents/${safePath}`;
 }
 function normSymbol(value){ return String(value||"").trim().toUpperCase().replace(".IS",""); }
+/* Non-equity fallback listesi (PR #270): python tarafındaki otoriter
+   universe.manager.NON_EQUITY_SYMBOLS kümesinin birebir kopyası — parity
+   guard testi ikisini eşit tutar. Paket instrument_types taşımıyorsa bile
+   Hisseler sekmesi equity-only kalır; endeks/fon/sertifika "boş sektörlü
+   hisse" gibi listelenemez. */
+const NON_EQUITY_SYMBOLS=new Set(["ALTINS1","APBDL","APGLD","APLIB","APMDL","APX30","GLDTR","GMSTR","ISGLK","NPTLR","OPK30","OPT25","OPTGY","OPTLR","OPX30","QTEMZ","USDTR","X030S","X100S","XBANA","XBANK","XBLSM","XELKT","XFINK","XGIDA","XGMYO","XHARZ","XHOLD","XILTM","XINSA","XKAGT","XKMYA","XKOBI","XKURY","XMADN","XMANA","XMESY","XSADA","XSANK","XSANT","XSBAL","XSBUR","XSDNZ","XSGRT","XSIST","XSIZM","XSKAY","XSKOC","XSKON","XSPOR","XSTKR","XTAST","XTCRT","XTEKS","XTM25","XTMTU","XTRZM","XTUMY","XU030","XU050","XU100","XUHIZ","XULAS","XUMAL","XUSIN","XUSRD","XUTEK","XUTUM","XYLDZ","XYORT","XYUZO","Z30EA","Z30KE","Z30KP","ZELOT","ZGOLD","ZPBDL","ZPLIB","ZPT10","ZPX30","ZRE20","ZSR25","ZTLRF","ZTLRK","ZTM25"]);
+function isEquitySymbol(symbol){
+  const sym=normSymbol(symbol);
+  if(!sym) return false;
+  const typed=S.chartBundle && S.chartBundle.instrument_types;
+  if(typed && typed[sym]) return false;      // paket metadata'sı (yeni paketler)
+  return !NON_EQUITY_SYMBOLS.has(sym);       // metadata'sız paket fallback'i
+}
 function parseRelatedProfiles(raw){
   const active=slugify(S.profile);
   const out=[];
@@ -446,7 +467,19 @@ function fmtDate(value){
 function signCls(x){ const n=Number(x); return !Number.isFinite(n)?"":(n>0?"pos":(n<0?"neg":"")); }
 function num(value){
   if(value===null || value===undefined || typeof value==="boolean") return null;
-  const n=Number(value);
+  if(typeof value==="number") return Number.isFinite(value) ? value : null;
+  let text=String(value).trim();
+  if(!text || text==="-" || text==="—") return null;
+  text=text.replace(/\s+/g,"").replace(/%/g,"");
+  if(!text || text==="-" || text==="—") return null;
+  if(text.includes(",") && text.includes(".")){
+    text = text.lastIndexOf(",") > text.lastIndexOf(".")
+      ? text.replace(/\./g,"").replace(/,/g,".")
+      : text.replace(/,/g,"");
+  }else if(text.includes(",")){
+    text=text.replace(/,/g,".");
+  }
+  const n=Number(text);
   return Number.isFinite(n) ? n : null;
 }
 function rowsFromArtifact(payload){
@@ -569,6 +602,84 @@ function mergeTrackingPrices(payload){
   }
 }
 function priceFor(symbol){ return S.prices[normSymbol(symbol)] || null; }
+
+function companyNameFor(symbol, row){
+  const sym=normSymbol(symbol);
+  const candidateName=String((row && row["Şirket Adı"]) || "").trim();
+  if(candidateName) return candidateName;
+  const fin=S.chartBundle && (S.chartBundle.fin||{})[sym];
+  const bundleName=String((fin && fin.company_name) || "").trim();
+  return bundleName || "şirket adı bulunamadı";
+}
+function updateDetailHeading(symbol, row){
+  const el=document.getElementById("detailHeadingText");
+  if(!el) return;
+  const sym=normSymbol(symbol);
+  el.textContent = sym ? `${sym} — ${companyNameFor(sym, row)}` : "Detay";
+}
+function detailInputSymbol(){
+  return normSymbol(document.getElementById("detailSym").value);
+}
+function detailSymbolEdited(){
+  S.detailAutoFilled=false;
+  renderDetail();
+}
+function knownDetailSymbols(){
+  const symbols=new Set();
+  (S.positions||[]).forEach(p=>{
+    const sym=normSymbol(p && p.symbol);
+    if(sym) symbols.add(sym);
+  });
+  Object.keys(S.rowBySymbol||{}).forEach(sym=>{
+    const n=normSymbol(sym);
+    if(n) symbols.add(n);
+  });
+  const bundleSymbols=S.chartBundle && Array.isArray(S.chartBundle.symbols) ? S.chartBundle.symbols : [];
+  bundleSymbols.forEach(sym=>{
+    const n=normSymbol(sym);
+    if(n) symbols.add(n);
+  });
+  return symbols;
+}
+function isKnownDetailSymbol(symbol){
+  const sym=normSymbol(symbol);
+  return !!sym && knownDetailSymbols().has(sym);
+}
+function preferredDetailSymbol(){
+  const saved=normSymbol(localStorage.getItem(LS.defaultDetailSymbol));
+  if(saved){
+    // Non-equity (endeks/fon/sertifika) ana sembol sayılmaz: kayıt sessizce
+    // temizlenir ve zincir portföy/aday/paket fallback'ine düşer (PR #270).
+    if(!isEquitySymbol(saved)){ localStorage.removeItem(LS.defaultDetailSymbol); }
+    else if(isKnownDetailSymbol(saved)) return saved;
+    else if(S.chartBundle) localStorage.removeItem(LS.defaultDetailSymbol);
+  }
+  const pos=(S.positions||[]).find(p=>normSymbol(p && p.symbol));
+  if(pos) return normSymbol(pos.symbol);
+  const firstCandidate=S.candidateRows.length ? candidateRowsForDisplay()[0] : null;
+  if(firstCandidate) return normSymbol(firstCandidate["Hisse"] || firstCandidate["Kullanılan Güncel Sembol"]);
+  const bundleSymbols=S.chartBundle && Array.isArray(S.chartBundle.symbols) ? S.chartBundle.symbols : [];
+  const firstEquity=bundleSymbols.find(s=>isEquitySymbol(s));
+  return firstEquity ? normSymbol(firstEquity) : "";
+}
+function ensureDetailSymbol(force=false){
+  const input=document.getElementById("detailSym");
+  if(!input) return false;
+  const current=normSymbol(input.value);
+  if(current && !force) return false;
+  const sym=preferredDetailSymbol();
+  if(!sym) return false;
+  if(current===sym){ S.detailAutoFilled=true; return false; }
+  input.value=sym;
+  S.detailAutoFilled=true;
+  return true;
+}
+function makeDefaultDetailSymbol(){
+  const sym=detailInputSymbol();
+  if(!sym){ msg("Önce bir sembol açın.","err"); return; }
+  localStorage.setItem(LS.defaultDetailSymbol, sym);
+  msg(`${sym} ana sembol yapıldı.`);
+}
 
 async function loadMarketData(){
   const art = await readJson("data/latest_core_candidates.json");
@@ -744,13 +855,13 @@ function renderPortfolioTable(positions, editable){
     const qty=num(p.quantity), avg=num(p.avg_cost);
     const value=(price!==null && qty!==null)?price*qty:null;
     const pnl=(price!==null && avg!==null)?((price/avg-1)*100):null;
-    html+=`<tr><td><b>${esc(sym)}</b></td>
+    html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>
       <td class=num>${fmt(qty,0)}</td>
       <td class=num>${fmt(avg)}</td>
       <td class=num>${price!==null?fmt(price):"-"}<span class=cell-sub>${quote?esc(quote.source):"fiyat yok"}</span></td>
       <td class=num>${value!==null?fmt(value):"-"}</td>
       <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
-    if(editable) html+=`<td><button class=del onclick="delPosition(${i})">x</button></td>`;
+    if(editable) html+=`<td><button class=del onclick="event.stopPropagation();delPosition(${i})">x</button></td>`;
     html+="</tr>";
   });
   return html+"</table></div>";
@@ -1207,19 +1318,21 @@ const MGB = (() => {
 
 function selectDetail(symbol){
   document.getElementById("detailSym").value=normSymbol(symbol);
+  S.detailAutoFilled=false;
   show("detay");
 }
 function renderDetail(){
   const out=document.getElementById("detailOut");
   if(!out) return;
+  ensureDetailSymbol();
   let sym=normSymbol(document.getElementById("detailSym").value);
-  if(!sym && S.candidateRows.length) sym=normSymbol(candidateRowsForDisplay()[0]["Hisse"]);
-  if(!sym){ out.innerHTML='<div class="muted">Detay için sembol gir.</div>'; return; }
+  if(!sym){ updateDetailHeading("", null); out.innerHTML='<div class="muted">Detay için sembol gir.</div>'; return; }
   const row=S.rowBySymbol[sym];
+  updateDetailHeading(sym, row);
   if(!row){
     // BIST evreninden herhangi bir sembol: metrik kartlar yalnız günün aday
     // artifact'inde olanlar için mevcut; grafik + bilanço yine de çizilir.
-    let basic=`<div><b>${esc(sym)}</b> <span class="muted">bugünkü aday listesinde değil — temel kartlar aday artifact'inden gelir</span></div>`;
+    let basic=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, null))} · bugünkü aday listesinde değil — temel kartlar aday artifact'inden gelir</span></div>`;
     const bundleBars=S.chartBundle && (S.chartBundle.bars||{})[sym];
     if(bundleBars && bundleBars.c.length>1){
       const n=bundleBars.c.length, last=bundleBars.c[n-1], prev=bundleBars.c[n-2];
@@ -1236,7 +1349,7 @@ function renderDetail(){
   }
   const quote=priceFor(sym);
   const chg=row["Günlük Değişim %"];
-  let html=`<div><b>${esc(sym)}</b> <span class="muted">${esc(detailField(row,"Şirket Adı",""))}</span>
+  let html=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, row))}</span>
     <span class="pill">${esc(candidateModeLabel())}</span></div>`;
   html += `<div class="metric-grid">
     <div class="metric"><div class="label">Fiyat</div><div class="value">${fmt(quote?quote.price:(row["Fiyat"] ?? row["Kapanış"]))}</div><div class="muted">${quote?esc(quote.source):"artifact"}</div></div>
@@ -1282,7 +1395,10 @@ function renderFin(sym){
   const out=document.getElementById("finOut");
   if(!out) return;
   const fin=S.chartBundle && (S.chartBundle.fin||{})[normSymbol(sym)];
-  if(!fin){ out.innerHTML='<div class="muted" style="margin-top:8px">Son bilanço verisi bulunamadı.</div>'; return; }
+  // Metadata-only girdi (PR #271: yalnız isim/sektör zenginleştirmesi almış,
+  // bilanço tarihçesi olmayan sembol) boş bir tablo gibi görünmesin.
+  if(!fin || (!fin.period_label && num(fin.revenue)===null && num(fin.equity_spot)===null)){
+    out.innerHTML='<div class="muted" style="margin-top:8px">Son bilanço verisi bulunamadı.</div>'; return; }
   // Tarihçe oranları KESİR tutar (−0.2146 = %−21.5); gösterimde ×100.
   const g=(v,d)=>{const n=num(v); return n===null?"-":"%"+fmt(n*100,d??1);};
   let html=`<h2 style="margin-top:12px">Son Bilanço <span class="pill">${esc(fin.period_label||"?")}</span></h2>`;
@@ -1319,6 +1435,35 @@ function bundleQuote(symbol){
           prev:n>1?bars.c[n-2]:null};
 }
 function quoteOrBundle(symbol){ return priceFor(symbol) || bundleQuote(symbol); }
+function setHisselerSort(key){
+  const current=S.hisselerSort || {key:"sym", dir:1};
+  if(current.key===key) current.dir *= -1;
+  else current.dir = ["price","chg","decision"].includes(key) ? -1 : 1;
+  current.key=key;
+  S.hisselerSort=current;
+  renderHisseler();
+}
+function sortMark(key){
+  const sort=S.hisselerSort || {};
+  if(sort.key!==key) return "";
+  return sort.dir>0 ? " ▲" : " ▼";
+}
+function compareHisseler(a,b){
+  const sort=S.hisselerSort || {key:"sym", dir:1};
+  const key=sort.key || "sym";
+  const dir=sort.dir || 1;
+  if(["price","chg","decision"].includes(key)){
+    const av=num(a[key]), bv=num(b[key]);
+    if(av!==null || bv!==null){
+      if(av===null) return 1;
+      if(bv===null) return -1;
+      if(av!==bv) return dir*(av-bv);
+    }
+  }else if(key==="sym"){
+    return dir*a.sym.localeCompare(b.sym);
+  }
+  return a.sym.localeCompare(b.sym);
+}
 async function renderHisseler(){
   const meta=document.getElementById("hisselerMeta"), table=document.getElementById("hisselerTable");
   if(!meta||!table) return;
@@ -1329,23 +1474,40 @@ async function renderHisseler(){
   const q=normSymbol(document.getElementById("hisselerFilter").value);
   const rows=[];
   for(const sym of Object.keys(bars)){
+    if(!isEquitySymbol(sym)) continue;  // Hisseler = yalnız hisse (PR #270)
     const sector=(fin[sym]&&fin[sym].sector)||"";
-    if(q && !sym.includes(q) && !sector.toUpperCase().includes(q)) continue;
+    const candidate=S.rowBySymbol[sym] || {};
+    const company=companyNameFor(sym, candidate);
+    const health=String(candidate["Şirket Sağlığı"] || "").trim();
+    const pricing=String(candidate["Fiyatlama"] || "").trim();
+    if(q && !sym.includes(q) && !sector.toUpperCase().includes(q) &&
+       !company.toUpperCase().includes(q) && !health.toUpperCase().includes(q) &&
+       !pricing.toUpperCase().includes(q)) continue;
     const quote=quoteOrBundle(sym);
     if(!quote) continue;
     const b=bars[sym], n=b.c.length;
     const chg=(n>1 && b.c[n-2])?((b.c[n-1]/b.c[n-2]-1)*100):null;
-    rows.push({sym, sector, price:quote.price, source:quote.source, chg});
+    rows.push({
+      sym, sector, price:quote.price, source:quote.source, chg,
+      health, pricing, decision:num(candidate["Karar Skoru"]), company,
+    });
   }
-  rows.sort((a,b)=>a.sym.localeCompare(b.sym));
+  rows.sort(compareHisseler);
   const lastDay=(()=>{const any=Object.values(bars)[0];return any?fmtDate(any.t[any.t.length-1]):"?";})();
-  meta.textContent=`${rows.length} hisse · paket kapanışı: ${lastDay}`;
-  let html="<tr><th>Hisse</th><th class=num>Fiyat</th><th class=num>Gün%</th><th>Sektör</th></tr>";
+  const scored=rows.filter(r=>r.decision!==null).length;
+  meta.textContent=`${rows.length} hisse · paket kapanışı: ${lastDay} · karar/sağlık/fiyatlama: ${scored} production adayı`;
+  let html=`<tr><th class="sortable" onclick="setHisselerSort('sym')">Hisse${sortMark("sym")}</th>`+
+    `<th class="num sortable" onclick="setHisselerSort('price')">Fiyat${sortMark("price")}</th>`+
+    `<th class="num sortable" onclick="setHisselerSort('chg')">Günlük${sortMark("chg")}</th>`+
+    `<th>Sağlık</th><th>Ucuz/Pahalı</th>`+
+    `<th class="num sortable" onclick="setHisselerSort('decision')">Karar${sortMark("decision")}</th></tr>`;
   for(const r of rows){
     html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td><b>${esc(r.sym)}</b><span class=cell-sub>${esc(r.source)}</span></td>`+
       `<td class=num>${fmt(r.price)}</td>`+
       `<td class="num ${signCls(r.chg)}">${r.chg!==null?fmt(r.chg,1):"-"}</td>`+
-      `<td class=muted>${esc(r.sector||"-")}</td></tr>`;
+      `<td>${esc(r.health||"-")}</td>`+
+      `<td>${esc(r.pricing||"-")}</td>`+
+      `<td class=num>${r.decision!==null?fmt(r.decision,0):"-"}</td></tr>`;
   }
   table.innerHTML=html;
 }
@@ -1450,7 +1612,8 @@ async function boot(){
     await loadMarketData();
     loadAdaylar();
     loadKarne();
-    loadPortfolio();
+    await loadPortfolio();
+    ensureDetailSymbol();
     renderDetail();
   }catch(e){
     msg(e.message,"err");
@@ -1458,7 +1621,11 @@ async function boot(){
   // Paket arka planda yüklenir ki portföy fiyatları (aday-dışı semboller
   // dahil) Detay'a girmeden dolsun; hata sessiz geçilir (paket beslemesi
   // opsiyonel katman).
-  ensureBundle().then(()=>{ renderPortfolio(); }).catch(()=>{});
+  ensureBundle().then(()=>{
+    const changed=S.detailAutoFilled ? ensureDetailSymbol(true) : ensureDetailSymbol();
+    if(changed) renderDetail();
+    renderPortfolio();
+  }).catch(()=>{});
 }
 boot();
 </script>
