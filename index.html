@@ -79,6 +79,11 @@
   .portfolio-block:first-of-type{border-top:none;padding-top:0;margin-top:0;}
   .portfolio-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:6px;}
   .portfolio-head h3{font-size:13px;letter-spacing:0;}
+  /* Giriş formu görsel olarak AYRI blok — annenin (izlenen) portföyünün
+     hemen altına yapışıp "onun portföyüne ekliyorum" algısı yaratmasın. */
+  .pf-add-block{border-top:2px solid var(--acc);margin-top:16px;padding-top:12px;}
+  .pf-add-block h3{font-size:14px;letter-spacing:0;margin-bottom:4px;color:var(--acc);}
+  .portfolio-head .pf-role{font-size:10px;font-weight:600;color:var(--sub);}
   .metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0 10px;}
   .metric{border:1px solid var(--line);border-radius:8px;padding:8px;background:#fbfcfd;}
   .metric .label{font-size:10px;color:var(--sub);font-weight:700;}
@@ -212,13 +217,20 @@
     <div class="card">
       <h2>Portföy</h2>
       <div id="pfWrap"></div>
-      <div class="form-grid">
-        <input id="pfSym" placeholder="Sembol (örn. BIMAS)" oninput="updatePriceHint()">
-        <input id="pfQty" type="number" inputmode="decimal" placeholder="Adet">
-        <input id="pfCost" type="number" inputmode="decimal" placeholder="Maliyet">
+      <div class="pf-add-block">
+        <h3 id="pfAddHeading">Kendi Portföyüme Hisse Ekle</h3>
+        <div class="muted" id="pfAddNote" style="margin-bottom:8px">
+          Bu form yalnızca KENDİ portföyüne ekler; izlenen (ör. anne) portföyleri
+          salt-görüntüdür, bu kutular onları değiştirmez. Birden fazla hisse ekleyebilirsin.
+        </div>
+        <div class="form-grid">
+          <input id="pfSym" placeholder="Sembol (örn. BIMAS)" oninput="updatePriceHint()">
+          <input id="pfQty" type="number" inputmode="decimal" placeholder="Adet">
+          <input id="pfCost" type="number" inputmode="decimal" placeholder="Maliyet">
+        </div>
+        <div class="muted" id="pfPriceHint" style="margin:6px 0 10px"></div>
+        <button class="btn" onclick="addPosition()">Kendi portföyüme ekle</button>
       </div>
-      <div class="muted" id="pfPriceHint" style="margin:6px 0 10px"></div>
-      <button class="btn" onclick="addPosition()">Ekle ve Kaydet</button>
     </div>
   </section>
 
@@ -898,26 +910,32 @@ function renderPortfolioTable(positions, editable){
   });
   return html+"</table></div>";
 }
-function renderPortfolioGroup(title, positions, editable){
+function renderPortfolioGroup(title, positions, editable, role){
   const totals=portfolioTotals(positions);
   const pnlText=totals.pnl!==null ? ` | K/Z: <b class="${signCls(totals.pnl)}">%${fmt(totals.pnl,1)}</b>` : "";
   const pricedText=positions.length ? ` | fiyatlı: ${totals.priced}/${positions.length}` : "";
+  const roleTag=role ? ` <span class="pf-role">(${esc(role)})</span>` : "";
   return `<div class="portfolio-block">
-    <div class="portfolio-head"><h3>${esc(title)}</h3><div class="muted">Piyasa: <b>${fmt(totals.total)} TL</b> | Maliyet: <b>${fmt(totals.cost)} TL</b>${pnlText}${pricedText}</div></div>
+    <div class="portfolio-head"><h3>${esc(title)}${roleTag}</h3><div class="muted">Piyasa: <b>${fmt(totals.total)} TL</b> | Maliyet: <b>${fmt(totals.cost)} TL</b>${pnlText}${pricedText}</div></div>
     ${renderPortfolioTable(positions, editable)}
   </div>`;
 }
 function renderPortfolio(){
   const wrap=document.getElementById("pfWrap");
-  const activeTitle=`${slugify(S.profile)} portföyü`;
-  let html=renderPortfolioGroup(activeTitle, S.positions, true);
+  const own=slugify(S.profile);
+  const activeTitle=`${own} portföyü`;
+  let html=renderPortfolioGroup(activeTitle, S.positions, true, "senin portföyün");
   for(const item of S.relatedPortfolios){
-    html += renderPortfolioGroup(`${item.slug} portföyü`, item.positions, false);
+    html += renderPortfolioGroup(`${item.slug} portföyü`, item.positions, false,
+                                 "izleniyor · salt-görüntü");
   }
   if(!S.relatedPortfolios.length && parseRelatedProfiles(S.relatedProfiles).length){
     html += `<div class="portfolio-block"><div class="muted">İzlenen profil dosyası henüz yok.</div></div>`;
   }
   wrap.innerHTML=html;
+  // Form başlığı aktif profili açıkça söyler (hangi portföye eklediği belirsiz kalmasın).
+  const heading=document.getElementById("pfAddHeading");
+  if(heading) heading.textContent=`Kendi Portföyüme Hisse Ekle (${own})`;
   updatePriceHint();
 }
 async function loadPortfolio(){
