@@ -375,6 +375,38 @@ function githubContentsUrl(path){
   return `https://api.github.com/repos/${repo}/contents/${safePath}`;
 }
 function normSymbol(value){ return String(value||"").trim().toUpperCase().replace(".IS",""); }
+/* Değer Analizi: artifact "Fiyatlama" etiketini kullanıcı-dostu 5'li sözlüğe
+   NORMALIZE eder (display-only; scoring/etiket üretimi DEĞİŞMEZ). Bilinmeyen
+   değer güvenli fallback olarak olduğu gibi döner. (PR: UI label cleanup) */
+const VALUE_CLASS_MAP={
+  "çok ucuz":"çok ucuz","cok ucuz":"çok ucuz",
+  "ucuz":"ucuz",
+  "nötr":"adil değerinde","notr":"adil değerinde","makul":"adil değerinde",
+  "adil":"adil değerinde","adil değer":"adil değerinde","normal":"adil değerinde",
+  "dengeli":"adil değerinde",
+  "pahalı":"pahalı","pahali":"pahalı",
+  "çok pahalı":"çok pahalı","cok pahali":"çok pahalı",
+  "yorum sınırlı":"veri sınırlı","yorum sinirli":"veri sınırlı",
+};
+function valueClass(raw){
+  const s=String(raw||"").trim();
+  if(!s) return "-";
+  return VALUE_CLASS_MAP[s.toLocaleLowerCase("tr")] || s;
+}
+/* Teknik quote.source etiketini ("kapanış (paket)"/"piyasa"/"tracking
+   kapanış"…) kullanıcı-dostu tazelik ifadesine çevirir. Ham kaynak tooltip
+   (title) olarak korunur; ana tabloda teknik terim GÖRÜNMEZ. */
+const FRESHNESS_MAP={
+  "piyasa":"tarama fiyatı",
+  "kapanış":"kapanış","kapanış (paket)":"paket kapanışı",
+  "tracking kapanış":"kapanış",
+  "giriş kapanış":"kayıt fiyatı","son çıkış":"kayıt fiyatı",
+  "fiyat yok":"fiyat yok","artifact":"tarama fiyatı",
+};
+function freshnessLabel(source){
+  const s=String(source||"").trim();
+  return FRESHNESS_MAP[s] || (s?"paket":"");
+}
 /* Non-equity fallback listesi (PR #270): python tarafındaki otoriter
    universe.manager.NON_EQUITY_SYMBOLS kümesinin birebir kopyası — parity
    guard testi ikisini eşit tutar. Paket instrument_types taşımıyorsa bile
@@ -858,7 +890,7 @@ function renderPortfolioTable(positions, editable){
     html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>
       <td class=num>${fmt(qty,0)}</td>
       <td class=num>${fmt(avg)}</td>
-      <td class=num>${price!==null?fmt(price):"-"}<span class=cell-sub>${quote?esc(quote.source):"fiyat yok"}</span></td>
+      <td class=num title="${quote?('Fiyat kaynağı: '+esc(quote.source)):'fiyat yok'}">${price!==null?fmt(price):"-"}${quote?`<span class=cell-sub>${esc(freshnessLabel(quote.source))}</span>`:'<span class=cell-sub>fiyat yok</span>'}</td>
       <td class=num>${value!==null?fmt(value):"-"}</td>
       <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
     if(editable) html+=`<td><button class=del onclick="event.stopPropagation();delPosition(${i})">x</button></td>`;
@@ -906,7 +938,7 @@ function updatePriceHint(){
   const sym=normSymbol(document.getElementById("pfSym").value);
   if(!sym){ el.textContent=""; return; }
   const quote=quoteOrBundle(sym);
-  el.textContent = quote ? `${sym} son fiyat: ${fmt(quote.price)} TL (${quote.source})` : `${sym} için repo verisinde fiyat bulunamadı.`;
+  el.textContent = quote ? `${sym} son fiyat: ${fmt(quote.price)} TL · ${freshnessLabel(quote.source)}` : `${sym} için repo verisinde fiyat bulunamadı.`;
 }
 function addPosition(){
   const sym=normSymbol(document.getElementById("pfSym").value);
@@ -1352,7 +1384,7 @@ function renderDetail(){
   let html=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, row))}</span>
     <span class="pill">${esc(candidateModeLabel())}</span></div>`;
   html += `<div class="metric-grid">
-    <div class="metric"><div class="label">Fiyat</div><div class="value">${fmt(quote?quote.price:(row["Fiyat"] ?? row["Kapanış"]))}</div><div class="muted">${quote?esc(quote.source):"artifact"}</div></div>
+    <div class="metric"><div class="label">Fiyat</div><div class="value">${fmt(quote?quote.price:(row["Fiyat"] ?? row["Kapanış"]))}</div><div class="muted" title="${quote?('Fiyat kaynağı: '+esc(quote.source)):'artifact'}">${quote?esc(freshnessLabel(quote.source)):"tarama fiyatı"}</div></div>
     <div class="metric"><div class="label">Günlük</div><div class="value ${signCls(chg)}">%${fmt(chg,1)}</div><div class="muted">hafta %${fmt(row["Haftalık Değişim %"],1)}</div></div>
     <div class="metric"><div class="label">V3 Sıra</div><div class="value">${fmtInt(row["V3 Sıra"])}</div><div class="muted">V2 sıra ${fmtInt(row["V2 Sıra"])}</div></div>
     <div class="metric"><div class="label">V3 Skor</div><div class="value">${fmt(row["V3 Skor"],1)}</div><div class="muted">karar ${fmt(row["Karar Skoru"],0)}</div></div>
@@ -1364,7 +1396,7 @@ function renderDetail(){
     ["Piyasa rejimi", detailField(row,"Piyasa Rejimi")],
     ["Sektör", detailField(row,"Sektör")],
     ["Şirket sağlığı", detailField(row,"Şirket Sağlığı")],
-    ["Fiyatlama", detailField(row,"Fiyatlama")],
+    ["Değer analizi", valueClass(detailField(row,"Fiyatlama",""))],
     ["Güven", `${detailField(row,"Güven Seviyesi")} (${fmt(row["Güven Puanı"],0)})`],
     ["Kalite", `${fmt(row["Temel Kalite Skoru"],1)} - ${detailField(row,"Kalite Trendi")}`],
     ["Değerleme", fmt(row["Değerleme Skoru"],1)],
@@ -1499,14 +1531,14 @@ async function renderHisseler(){
   let html=`<tr><th class="sortable" onclick="setHisselerSort('sym')">Hisse${sortMark("sym")}</th>`+
     `<th class="num sortable" onclick="setHisselerSort('price')">Fiyat${sortMark("price")}</th>`+
     `<th class="num sortable" onclick="setHisselerSort('chg')">Günlük${sortMark("chg")}</th>`+
-    `<th>Sağlık</th><th>Ucuz/Pahalı</th>`+
+    `<th>Sağlık</th><th>Değer Analizi</th>`+
     `<th class="num sortable" onclick="setHisselerSort('decision')">Karar${sortMark("decision")}</th></tr>`;
   for(const r of rows){
-    html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td><b>${esc(r.sym)}</b><span class=cell-sub>${esc(r.source)}</span></td>`+
+    html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td title="Fiyat kaynağı: ${esc(r.source)}"><b>${esc(r.sym)}</b><span class=cell-sub>${esc(freshnessLabel(r.source))}</span></td>`+
       `<td class=num>${fmt(r.price)}</td>`+
       `<td class="num ${signCls(r.chg)}">${r.chg!==null?fmt(r.chg,1):"-"}</td>`+
       `<td>${esc(r.health||"-")}</td>`+
-      `<td>${esc(r.pricing||"-")}</td>`+
+      `<td>${esc(valueClass(r.pricing))}</td>`+
       `<td class=num>${r.decision!==null?fmt(r.decision,0):"-"}</td></tr>`;
   }
   table.innerHTML=html;
