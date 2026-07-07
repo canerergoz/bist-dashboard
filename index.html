@@ -16,31 +16,44 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>BIST Assistant</title>
 <style>
-  :root{--bg:#f5f6f7;--card:#ffffff;--ink:#22303c;--sub:#6b7f94;--line:#e0e4e8;
+  :root{--fs:1;--bg:#f5f6f7;--card:#ffffff;--ink:#22303c;--sub:#6b7f94;--line:#e0e4e8;
         --pos:#2f6f44;--neg:#8b3a3a;--acc:#2980b9;--warn:#b8860b;--soft:#eef3f7;}
+  /* Yazı Boyutu (PR #289): tüm px fontları --fs ile ölçeklenir; default 1 = birebir aynı. */
+  :root[data-font-size="small"]{--fs:0.92;}
+  :root[data-font-size="large"]{--fs:1.12;}
   *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;}
   body{background:var(--bg);color:var(--ink);}
   header{padding:14px 16px 10px;background:var(--card);border-bottom:1px solid var(--line);
          position:sticky;top:0;z-index:5;}
   .head-line{display:flex;align-items:center;justify-content:space-between;gap:10px;}
-  header h1{font-size:17px;font-weight:700;letter-spacing:0;}
-  header .sub{font-size:11px;color:var(--sub);margin-top:2px;word-break:break-word;}
+  header h1{font-size:calc(17px * var(--fs));font-weight:700;letter-spacing:0;}
+  header .sub{font-size:calc(11px * var(--fs));color:var(--sub);margin-top:2px;word-break:break-word;}
   .refresh-btn{flex:0 0 auto;width:34px;height:34px;border:1px solid var(--line);
-        border-radius:8px;background:var(--soft);color:var(--acc);font-size:19px;
+        border-radius:8px;background:var(--soft);color:var(--acc);font-size:calc(19px * var(--fs));
         font-weight:700;line-height:1;cursor:pointer;}
   .refresh-btn:active{background:#dfeaf2;}
+  /* Yazı Boyutu kontrolü (PR #289) — kompakt A/A/A grubu */
+  .head-tools{display:flex;align-items:center;gap:8px;flex:0 0 auto;}
+  .fontsize-group{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .fontsize-group button{border:none;background:var(--soft);color:var(--sub);cursor:pointer;
+        line-height:1;padding:6px 8px;font-weight:700;}
+  .fontsize-group button[data-fs="small"]{font-size:11px;}
+  .fontsize-group button[data-fs="medium"]{font-size:14px;}
+  .fontsize-group button[data-fs="large"]{font-size:17px;}
+  .fontsize-group button+button{border-left:1px solid var(--line);}
+  .fontsize-group button.on{background:var(--acc);color:#fff;}
   main{padding:12px;max-width:720px;margin:0 auto;}
   .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
         padding:12px;margin-bottom:12px;}
-  .card h2{font-size:14px;margin-bottom:8px;letter-spacing:0;}
+  .card h2{font-size:calc(14px * var(--fs));margin-bottom:8px;letter-spacing:0;}
   /* Uzun tablolarda başlık satırı donar (kullanıcı isteği 2026-07-06):
      dikey kaydırma kabın içinde kalır ki position:sticky viewport yerine
      kaba yapışsın — sayfa-gövdesi kaydırmasında sticky, overflow-x'li
      sarmalayıcı yüzünden çalışmaz. */
   .table-wrap{width:100%;overflow:auto;max-height:72vh;-webkit-overflow-scrolling:touch;}
-  table{width:100%;border-collapse:collapse;font-size:13px;min-width:420px;}
+  table{width:100%;border-collapse:collapse;font-size:calc(13px * var(--fs));min-width:420px;}
   th{color:var(--sub);font-weight:600;text-align:left;padding:6px 4px;
-     border-bottom:1px solid var(--line);font-size:11px;white-space:nowrap;
+     border-bottom:1px solid var(--line);font-size:calc(11px * var(--fs));white-space:nowrap;
      position:sticky;top:0;background:var(--card);z-index:2;
      box-shadow:0 1px 0 var(--line);}
   td{padding:7px 4px;border-bottom:1px solid var(--line);vertical-align:top;}
@@ -50,62 +63,62 @@
   .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
   th.sortable{cursor:pointer;color:var(--acc);}
   .pos{color:var(--pos);font-weight:600;} .neg{color:var(--neg);font-weight:600;}
-  .muted{color:var(--sub);font-size:11px;}
-  .cell-sub{display:block;color:var(--sub);font-size:10px;margin-top:2px;white-space:nowrap;}
+  .muted{color:var(--sub);font-size:calc(11px * var(--fs));}
+  .cell-sub{display:block;color:var(--sub);font-size:calc(10px * var(--fs));margin-top:2px;white-space:nowrap;}
   .pill{display:inline-block;background:var(--soft);color:var(--acc);border-radius:10px;
-        padding:1px 8px;font-size:10px;font-weight:700;margin-left:6px;vertical-align:middle;}
+        padding:1px 8px;font-size:calc(10px * var(--fs));font-weight:700;margin-left:6px;vertical-align:middle;}
   .pill.warn{color:var(--warn);background:#fff5dc;}
   nav{display:flex;gap:6px;margin-top:10px;padding-top:8px;border-top:1px solid var(--line);
       overflow-x:auto;-webkit-overflow-scrolling:touch;}
   nav button{flex:1 0 auto;min-width:62px;padding:8px 6px;border:1px solid transparent;
-             border-radius:8px;background:none;font-size:12px;color:var(--sub);cursor:pointer;}
+             border-radius:8px;background:none;font-size:calc(12px * var(--fs));color:var(--sub);cursor:pointer;}
   nav button.on{color:var(--acc);font-weight:700;background:var(--soft);border-color:#d8e6f0;}
   input,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;
-        font-size:14px;margin:4px 0 10px;background:#fff;color:var(--ink);}
-  label{font-size:12px;color:var(--sub);font-weight:600;}
+        font-size:calc(14px * var(--fs));margin:4px 0 10px;background:#fff;color:var(--ink);}
+  label{font-size:calc(12px * var(--fs));color:var(--sub);font-weight:600;}
   .btn{display:block;width:100%;padding:11px;border:none;border-radius:8px;
-       background:var(--acc);color:#fff;font-size:14px;font-weight:700;cursor:pointer;}
+       background:var(--acc);color:#fff;font-size:calc(14px * var(--fs));font-weight:700;cursor:pointer;}
   .btn.gray{background:#e9ecef;color:var(--ink);}
-  .btn.small{width:auto;display:inline-block;padding:7px 12px;font-size:12px;}
+  .btn.small{width:auto;display:inline-block;padding:7px 12px;font-size:calc(12px * var(--fs));}
   .row{display:flex;gap:8px;} .row>*{flex:1;}
   .form-grid{display:grid;grid-template-columns:1.1fr .75fr .9fr;gap:8px;margin-top:10px;}
   .form-grid input{margin:0;}
-  .msg{padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:10px;display:none;}
+  .msg{padding:8px 10px;border-radius:8px;font-size:calc(12px * var(--fs));margin-bottom:10px;display:none;}
   .msg.ok{background:#e7f3ea;color:var(--pos);display:block;}
   .msg.err{background:#f7e9e9;color:var(--neg);display:block;}
-  .disclaimer{font-size:10px;color:var(--sub);text-align:center;padding:10px 16px 18px;}
-  .del{color:var(--neg);background:none;border:none;font-size:16px;cursor:pointer;padding:0 6px;}
+  .disclaimer{font-size:calc(10px * var(--fs));color:var(--sub);text-align:center;padding:10px 16px 18px;}
+  .del{color:var(--neg);background:none;border:none;font-size:calc(16px * var(--fs));cursor:pointer;padding:0 6px;}
   .portfolio-block{border-top:1px solid var(--line);padding-top:10px;margin-top:10px;}
   .portfolio-block:first-of-type{border-top:none;padding-top:0;margin-top:0;}
   .portfolio-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:6px;}
-  .portfolio-head h3{font-size:13px;letter-spacing:0;}
+  .portfolio-head h3{font-size:calc(13px * var(--fs));letter-spacing:0;}
   /* Giriş formu görsel olarak AYRI blok — annenin (izlenen) portföyünün
      hemen altına yapışıp "onun portföyüne ekliyorum" algısı yaratmasın. */
   .pf-add-block{border-top:2px solid var(--acc);margin-top:16px;padding-top:12px;}
-  .pf-add-block h3{font-size:14px;letter-spacing:0;margin-bottom:4px;color:var(--acc);}
-  .portfolio-head .pf-role{font-size:10px;font-weight:600;color:var(--sub);}
+  .pf-add-block h3{font-size:calc(14px * var(--fs));letter-spacing:0;margin-bottom:4px;color:var(--acc);}
+  .portfolio-head .pf-role{font-size:calc(10px * var(--fs));font-weight:600;color:var(--sub);}
   /* Inline edit (PR C2): kendi portföy satırı düzenleme */
   .pf-actions{white-space:nowrap;}
-  .pf-edit{color:var(--acc);background:none;border:none;font-size:15px;cursor:pointer;padding:0 6px;}
-  .pf-editing input{width:100%;padding:5px;font-size:13px;margin:0;}
+  .pf-edit{color:var(--acc);background:none;border:none;font-size:calc(15px * var(--fs));cursor:pointer;padding:0 6px;}
+  .pf-editing input{width:100%;padding:5px;font-size:calc(13px * var(--fs));margin:0;}
   .pf-editing td{vertical-align:middle;}
   .metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0 10px;}
   .metric{border:1px solid var(--line);border-radius:8px;padding:8px;background:#fbfcfd;}
-  .metric .label{font-size:10px;color:var(--sub);font-weight:700;}
-  .metric .value{font-size:16px;font-weight:700;margin-top:2px;}
+  .metric .label{font-size:calc(10px * var(--fs));color:var(--sub);font-weight:700;}
+  .metric .value{font-size:calc(16px * var(--fs));font-weight:700;margin-top:2px;}
   .detail-grid{display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px;}
   .detail-row{display:grid;grid-template-columns:minmax(96px,.9fr) minmax(0,1.3fr);gap:8px;
-              padding:7px 0;border-bottom:1px solid var(--line);font-size:13px;}
+              padding:7px 0;border-bottom:1px solid var(--line);font-size:calc(13px * var(--fs));}
   .detail-row:last-child{border-bottom:none;}
-  .detail-row .k{color:var(--sub);font-size:11px;font-weight:700;}
-  .detail-note{font-size:12px;line-height:1.35;color:var(--ink);margin-top:8px;}
+  .detail-row .k{color:var(--sub);font-size:calc(11px * var(--fs));font-weight:700;}
+  .detail-note{font-size:calc(12px * var(--fs));line-height:1.35;color:var(--ink);margin-top:8px;}
   .detail-symbol-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center;}
   .detail-symbol-row input{margin:0;}
   #hisselerTable{min-width:620px;}
   @media (max-width:420px){
     main{padding:10px;}
     .card{padding:10px;}
-    table{font-size:12px;min-width:390px;}
+    table{font-size:calc(12px * var(--fs));min-width:390px;}
     th,td{padding-left:3px;padding-right:3px;}
     .form-grid{grid-template-columns:1fr;}
     .metric-grid{grid-template-columns:1fr 1fr;}
@@ -115,17 +128,17 @@
              border-bottom:1px solid var(--line);}
   .grade-row:last-child{border-bottom:none;}
   .grade-badge{flex:0 0 auto;min-width:64px;text-align:center;border-radius:8px;
-               padding:7px 8px;font-weight:800;font-size:13px;color:#fff;}
+               padding:7px 8px;font-weight:800;font-size:calc(13px * var(--fs));color:#fff;}
   .grade-badge.g-iyi{background:#2f6f44;} .grade-badge.g-orta{background:#b8860b;}
   .grade-badge.g-zayif{background:#a33a3a;} .grade-badge.g-yok{background:#8a97a3;}
   .grade-body{min-width:0;}
-  .grade-body .ders{font-weight:700;font-size:13px;}
-  .grade-body .aciklama{font-size:12px;color:var(--ink);line-height:1.4;margin-top:2px;}
+  .grade-body .ders{font-weight:700;font-size:calc(13px * var(--fs));}
+  .grade-body .aciklama{font-size:calc(12px * var(--fs));color:var(--ink);line-height:1.4;margin-top:2px;}
   .verdict{border:1px solid var(--line);border-left:4px solid var(--warn);
-           border-radius:8px;background:#fffdf5;padding:10px 12px;font-size:13px;
+           border-radius:8px;background:#fffdf5;padding:10px 12px;font-size:calc(13px * var(--fs));
            line-height:1.45;margin-bottom:10px;}
   details.karne-detay{margin-top:10px;}
-  details.karne-detay summary{font-size:12px;color:var(--acc);font-weight:700;
+  details.karne-detay summary{font-size:calc(12px * var(--fs));color:var(--acc);font-weight:700;
            cursor:pointer;padding:6px 0;}
   /* --- Sektör ısı tablosu --- */
   #sectorTable tr.heat td{color:#fff;border-bottom:1px solid rgba(255,255,255,.22);}
@@ -136,10 +149,10 @@
   #mgbCanvas{width:100%;height:340px;display:block;border:1px solid var(--line);
              border-radius:8px;background:#fdfefe;touch-action:none;}
   .chart-tip{position:absolute;pointer-events:none;background:rgba(34,48,60,.94);
-             color:#fff;border-radius:8px;padding:8px 10px;font-size:11px;
+             color:#fff;border-radius:8px;padding:8px 10px;font-size:calc(11px * var(--fs));
              line-height:1.45;max-width:230px;display:none;z-index:6;}
   .chart-tip b{color:#9fd3a8;}
-  .chart-legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:10px;color:var(--sub);}
+  .chart-legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:calc(10px * var(--fs));color:var(--sub);}
   .chart-legend span::before{content:"—";margin-right:3px;font-weight:900;}
   .lg-price::before{color:#22303c;} .lg-chan::before{color:#5c6a79;} .lg-tp::before{color:#2980b9;}
   .lg-stop::before{color:#c0392b;} .lg-sq::before{color:#b8860b;}
@@ -154,7 +167,14 @@
 <header>
   <div class="head-line">
     <h1>BIST Assistant <span id="profilePill" class="pill hide"></span></h1>
-    <button id="refreshBtn" class="refresh-btn" type="button" onclick="refreshApp()" aria-label="Yenile" title="Yenile">↻</button>
+    <div class="head-tools">
+      <div class="fontsize-group" role="group" aria-label="Yazı Boyutu">
+        <button type="button" data-fs="small" onclick="setFontSizePreference('small')" title="Küçük yazı" aria-label="Küçük yazı">A</button>
+        <button type="button" data-fs="medium" onclick="setFontSizePreference('medium')" title="Orta yazı" aria-label="Orta yazı">A</button>
+        <button type="button" data-fs="large" onclick="setFontSizePreference('large')" title="Büyük yazı" aria-label="Büyük yazı">A</button>
+      </div>
+      <button id="refreshBtn" class="refresh-btn" type="button" onclick="refreshApp()" aria-label="Yenile" title="Yenile">↻</button>
+    </div>
   </div>
   <div class="sub" id="headSub">kurulum bekleniyor</div>
   <nav id="nav" class="hide">
@@ -342,7 +362,27 @@ const LS = {
   profile:"bist_profile",
   related:"bist_related_profiles",
   defaultDetailSymbol:"bist_default_detail_symbol",
+  fontSize:"bist_font_size",
 };
+/* Yazı Boyutu (PR #289): küçük/orta/büyük; localStorage'da hatırlanır;
+   geçersiz değer medium'a düşer. Kök data-font-size CSS --fs'i ölçekler
+   (default 1 = birebir aynı). Veri/scoring/portföy DEĞİŞMEZ. */
+const FONT_SIZES=["small","medium","large"];
+function getFontSizePreference(){
+  const v=String(localStorage.getItem(LS.fontSize)||"").trim();
+  return FONT_SIZES.includes(v)?v:"medium";
+}
+function applyFontSizePreference(){
+  const v=getFontSizePreference();
+  document.documentElement.dataset.fontSize=v;
+  document.querySelectorAll(".fontsize-group button").forEach(b=>
+    b.classList.toggle("on", b.dataset.fs===v));
+}
+function setFontSizePreference(v){
+  if(!FONT_SIZES.includes(v)) v="medium";
+  localStorage.setItem(LS.fontSize, v);
+  applyFontSizePreference();
+}
 const S = {
   token: normalizeToken(localStorage.getItem(LS.token)),
   repo: normalizeRepo(localStorage.getItem(LS.repo)),
@@ -1717,6 +1757,7 @@ async function boot(){
     renderPortfolio();
   }).catch(()=>{});
 }
+applyFontSizePreference();  // kaydedilmiş yazı boyutunu ilk çizimden önce uygula
 boot();
 </script>
 </body>
