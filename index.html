@@ -182,8 +182,13 @@
       <input id="inRepo" placeholder="kullanici/assistant">
       <label>Profil adın (portföy dosyanın adı; örn. caner)</label>
       <input id="inProfile" placeholder="örn. caner">
-      <label>İzlenecek diğer profil(ler) (opsiyonel; örn. anne)</label>
-      <input id="inRelated" placeholder="örn. anne">
+      <label>İzlenecek diğer profil(ler) — salt-görüntü (opsiyonel)</label>
+      <input id="inRelated" placeholder="örn. anne, anneanne">
+      <div class="muted" style="margin:-4px 0 10px">
+        Birden fazla profili VİRGÜLLE ayır (ör. <b>anne, anneanne</b>). Bu portföyler
+        yalnızca görüntülenir; onları bu cihazdan düzenleyemezsin. Her profil sahibi
+        kendi arayüzünden kaydeder; sen Yenile'ye bastığında güncel hali görünür.
+      </div>
       <button class="btn" onclick="saveSetup()">Kaydet ve Bağlan</button>
     </div>
   </section>
@@ -221,6 +226,11 @@
   <section id="view-portfoy" class="hide">
     <div class="card">
       <h2>Portföy</h2>
+      <div class="muted" style="margin-bottom:8px">
+        Kendi portföyünü bu ekrandan düzenlersin. İzlenen portföyler (ör. anne,
+        anneanne) salt-görüntüdür — her sahibi kendi arayüzünden kaydeder; sen
+        Yenile'ye bastığında güncel hali görünür (anlık değil).
+      </div>
       <div id="pfWrap"></div>
       <div class="pf-add-block">
         <h3 id="pfAddHeading">Kendi Portföyüme Hisse Ekle</h3>
