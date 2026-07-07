@@ -306,9 +306,8 @@
       <div class="muted" id="hisselerMeta">yükleniyor…</div>
       <div class="table-wrap"><table id="hisselerTable"></table></div>
       <p class="muted" style="margin-top:6px">
-        Fiyatlar canlı DEĞİLDİR: çoğu satır bir önceki işlem gününün kapanışıdır
-        (akşam paketi); günün adayları için sabah taramasının fiyatı kullanılır ve
-        kaynak sütunda yazar. Satıra dokununca Detay açılır.
+        Fiyatlar son paket verisine göre gösterilir; gün içi gecikmeli fiyat
+        hattı ayrı olarak eklenecektir. Satıra dokununca Detay açılır.
       </p>
     </div>
   </section>
@@ -637,8 +636,8 @@ function quoteUpsert(symbol, price, source, asOf, priority){
 function quoteFromRow(row, artifact){
   const sym=normSymbol(row["Hisse"]||row["Kullanılan Güncel Sembol"]);
   const asOf=String(row["Son Güncelleme Saati"] || artifact.generated_at || artifact.selected_at || "");
-  if(num(row["Fiyat"])!==null) quoteUpsert(sym,row["Fiyat"],"piyasa",asOf,3);
-  else if(num(row["Kapanış"])!==null) quoteUpsert(sym,row["Kapanış"],"kapanış",asOf,2);
+  if(num(row["Fiyat"])!==null) quoteUpsert(sym,row["Fiyat"],"market",asOf,3);
+  else if(num(row["Kapanış"])!==null) quoteUpsert(sym,row["Kapanış"],"scan",asOf,2);
 }
 function mergeTrackingPrices(payload){
   const records = Array.isArray(payload) ? payload : ((payload && payload.records) || []);
@@ -646,9 +645,9 @@ function mergeTrackingPrices(payload){
     const snap=rec.feature_snapshot || {};
     const sym=normSymbol(rec.symbol || snap.symbol || rec["Hisse"]);
     const asOf=String(rec.selected_at || snap.picked_at || rec.artifact_selected_at || rec.published_at || "");
-    quoteUpsert(sym, snap.close_price, "tracking kapanış", asOf, 1);
-    quoteUpsert(sym, rec.exit_price, "son çıkış", asOf, 1);
-    quoteUpsert(sym, rec.entry_price, "giriş kapanış", asOf, 1);
+    quoteUpsert(sym, snap.close_price, "tracking_close", asOf, 1);
+    quoteUpsert(sym, rec.exit_price, "exit_close", asOf, 1);
+    quoteUpsert(sym, rec.entry_price, "entry_close", asOf, 1);
   }
 }
 function priceFor(symbol){ return S.prices[normSymbol(symbol)] || null; }
@@ -1518,7 +1517,7 @@ function bundleQuote(symbol){
   const bars=S.chartBundle && (S.chartBundle.bars||{})[sym];
   if(!bars || !bars.c || !bars.c.length) return null;
   const n=bars.c.length;
-  return {price:bars.c[n-1], source:"kapanış (paket)", asOf:String(bars.t[n-1]||""),
+  return {price:bars.c[n-1], source:"bundle_close", asOf:String(bars.t[n-1]||""),
           prev:n>1?bars.c[n-2]:null};
 }
 function quoteOrBundle(symbol){ return priceFor(symbol) || bundleQuote(symbol); }
