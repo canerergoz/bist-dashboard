@@ -404,6 +404,7 @@ const S = {
   profile: String(localStorage.getItem(LS.profile) || "").trim(),
   relatedProfiles: String(localStorage.getItem(LS.related) || "").trim(),
   prices: {},
+  latestPrices: null,
   candidateRows: [],
   rowBySymbol: {},
   positions: [],
@@ -692,11 +693,16 @@ function attachComputedV3(rows){
 }
 
 function quoteUpsert(symbol, price, source, asOf, priority){
+  const extra = arguments.length>5 ? arguments[5] : {};
   const sym=normSymbol(symbol);
   const n=num(price);
   if(!sym || n===null || n<=0) return;
   const current=S.prices[sym];
   const incoming={price:n, source, asOf:asOf||"", priority:priority||0};
+  const changePct=num(extra && extra.changePct);
+  const changeAbs=num(extra && extra.changeAbs);
+  if(changePct!==null) incoming.changePct=changePct;
+  if(changeAbs!==null) incoming.changeAbs=changeAbs;
   if(!current || incoming.priority>current.priority ||
      (incoming.priority===current.priority && incoming.asOf>current.asOf)){
     S.prices[sym]=incoming;
@@ -720,6 +726,80 @@ function mergeTrackingPrices(payload){
   }
 }
 function priceFor(symbol){ return S.prices[normSymbol(symbol)] || null; }
+function delayedQuoteFor(symbol){
+  const quote=priceFor(symbol);
+  return quote && quote.source==="delayed_snapshot" ? quote : null;
+}
+function changePctFor(symbol, fallback){
+  const quote=delayedQuoteFor(symbol);
+  const snap=quote ? num(quote.changePct) : null;
+  return snap!==null ? snap : fallback;
+}
+function parseIsoMs(value){
+  const ms=Date.parse(String(value||""));
+  return Number.isFinite(ms) ? ms : null;
+}
+function latestPriceMaxAgeMinutes(payload){
+  const n=num(payload && payload.freshness && payload.freshness.max_age_minutes);
+  return (n!==null && n>0) ? n : 60;
+}
+function validLatestPricesPayload(payload){
+  if(!payload || typeof payload!=="object" || Array.isArray(payload)) return false;
+  if(Number(payload.schema_version)!==1) return false;
+  if(payload.data_mode!=="delayed_snapshot") return false;
+  if(payload.is_realtime!==false) return false;
+  if(!parseIsoMs(payload.generated_at_utc)) return false;
+  if(!payload.freshness || typeof payload.freshness!=="object" || Array.isArray(payload.freshness)) return false;
+  if(!payload.symbols || typeof payload.symbols!=="object" || Array.isArray(payload.symbols)) return false;
+  return true;
+}
+function latestPricesSnapshotFresh(payload){
+  const generated=parseIsoMs(payload && payload.generated_at_utc);
+  if(!generated) return false;
+  const ageMinutes=(Date.now()-generated)/60000;
+  return ageMinutes>=0 && ageMinutes<=latestPriceMaxAgeMinutes(payload);
+}
+function usableLatestPriceQuote(payload, symbol){
+  const sym=normSymbol(symbol);
+  const row=payload && payload.symbols && payload.symbols[sym];
+  if(!sym || !row || typeof row!=="object" || Array.isArray(row)) return null;
+  if(normSymbol(row.symbol || sym)!==sym) return null;
+  if(row.is_stale===true) return null;
+  if(String(row.source_status||"").toLowerCase()!=="ok") return null;
+  const price=num(row.last_price);
+  if(price===null || price<=0) return null;
+  return {
+    price,
+    asOf:String(row.price_time_utc || row.source_time_local || payload.generated_at_utc || ""),
+    changePct:num(row.daily_change_pct),
+    changeAbs:num(row.daily_change_abs),
+  };
+}
+function applyLatestPrices(payload){
+  if(!validLatestPricesPayload(payload) || !latestPricesSnapshotFresh(payload)){
+    S.latestPrices=null;
+    return false;
+  }
+  S.latestPrices=payload;
+  for(const sym of Object.keys(payload.symbols||{})){
+    const quote=usableLatestPriceQuote(payload, sym);
+    if(!quote) continue;
+    quoteUpsert(sym, quote.price, "delayed_snapshot", quote.asOf, 4,
+      {changePct:quote.changePct, changeAbs:quote.changeAbs});
+  }
+  return true;
+}
+async function loadLatestPrices(){
+  try{
+    const payload=await readJson("data/latest_prices.json");
+    if(!payload){ S.latestPrices=null; return false; }
+    return applyLatestPrices(payload);
+  }catch(e){
+    S.latestPrices=null;
+    if(typeof console!=="undefined" && console.debug) console.debug("latest_prices ignored", e.message);
+    return false;
+  }
+}
 
 function companyNameFor(symbol, row){
   const sym=normSymbol(symbol);
@@ -822,6 +902,7 @@ async function loadMarketData(){
   };
   const tracking = await readJson("data/morning_pick_tracking.json");
   if(tracking) mergeTrackingPrices(tracking);
+  await loadLatestPrices();
 }
 function candidateModeLabel(){
   const info=S.artifactInfo || {};
@@ -867,11 +948,12 @@ function loadAdaylar(){
   meta.textContent = `üretim: ${stamp || "?"} | ${rows.length} aday | sıralama: ${basis.label}${artifactMode}`;
   let html = `<tr><th>#</th><th>Hisse</th><th>Şirket</th><th class=num>Fiyat</th><th class=num>Gün%</th><th class=num>${esc(basis.label)}</th></tr>`;
   rows.slice(0,15).forEach((r,i)=>{
-    const chg=r["Günlük Değişim %"];
     const sym=normSymbol(r["Hisse"]);
+    const quote=delayedQuoteFor(sym);
+    const chg=changePctFor(sym, r["Günlük Değişim %"]);
     html += `<tr class="clickable" onclick="selectDetail('${sym}')"><td>${i+1}</td><td><b>${esc(sym)}</b></td>
       <td class=muted>${esc(String(r["Şirket Adı"]||"").slice(0,20))}</td>
-      <td class=num>${fmt(r["Fiyat"] ?? r["Kapanış"])}</td>
+      <td class=num>${fmt(quote?quote.price:(r["Fiyat"] ?? r["Kapanış"]))}</td>
       <td class="num ${signCls(chg)}">${fmt(chg,1)}</td>
       <td class=num>${fmt(r[basis.score] ?? r["V3 Skor"] ?? r["V2 Skor"] ?? r["Karar Skoru"],1)}</td></tr>`;
   });
@@ -1508,7 +1590,7 @@ function renderDetail(){
     return;
   }
   const quote=priceFor(sym);
-  const chg=row["Günlük Değişim %"];
+  const chg=changePctFor(sym, row["Günlük Değişim %"]);
   let html=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, row))}</span>
     <span class="pill">${esc(candidateModeLabel())}</span></div>`;
   html += `<div class="metric-grid">
@@ -1646,7 +1728,8 @@ async function renderHisseler(){
     const quote=quoteOrBundle(sym);
     if(!quote) continue;
     const b=bars[sym], n=b.c.length;
-    const chg=(n>1 && b.c[n-2])?((b.c[n-1]/b.c[n-2]-1)*100):null;
+    const snapshotChg=num(quote.changePct);
+    const chg=snapshotChg!==null ? snapshotChg : ((n>1 && b.c[n-2])?((b.c[n-1]/b.c[n-2]-1)*100):null);
     rows.push({
       sym, sector, price:quote.price, source:quote.source, chg,
       health, pricing, decision:num(candidate["Karar Skoru"]), company,
