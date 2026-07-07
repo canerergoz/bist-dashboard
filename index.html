@@ -317,7 +317,7 @@
     <div class="card">
       <h2>Sektör <span class="pill warn">görüntüleme katmanı</span></h2>
       <div class="row">
-        <input id="sectorSym" placeholder="Sembol (örn. QUAGR)" style="margin:0" oninput="renderSector()">
+        <input id="sectorSym" placeholder="Hisse kodu yazın" style="margin:0" oninput="renderSector()">
         <button class="btn small" onclick="renderSector()">Aç</button>
       </div>
       <div class="muted" id="sectorMeta" style="margin-top:8px">Sembol girilince hissenin sektör tablosu açılır.</div>
@@ -421,20 +421,10 @@ function valueClass(raw){
   if(!s) return "-";
   return VALUE_CLASS_MAP[s.toLocaleLowerCase("tr")] || s;
 }
-/* Teknik quote.source etiketini ("kapanış (paket)"/"piyasa"/"tracking
-   kapanış"…) kullanıcı-dostu tazelik ifadesine çevirir. Ham kaynak tooltip
-   (title) olarak korunur; ana tabloda teknik terim GÖRÜNMEZ. */
-const FRESHNESS_MAP={
-  "piyasa":"tarama fiyatı",
-  "kapanış":"kapanış","kapanış (paket)":"paket kapanışı",
-  "tracking kapanış":"kapanış",
-  "giriş kapanış":"kayıt fiyatı","son çıkış":"kayıt fiyatı",
-  "fiyat yok":"fiyat yok","artifact":"tarama fiyatı",
-};
-function freshnessLabel(source){
-  const s=String(source||"").trim();
-  return FRESHNESS_MAP[s] || (s?"paket":"");
-}
+/* Fiyat provenance artık kullanıcıya HİÇ gösterilmez (#286 — kullanıcı
+   isteği). Ham `quote.source` yalnız görünmez `data-src` attribute'unda
+   (debug/test) tutulur; hiçbir metin/tooltip/etiket render edilmez.
+   Kalıcı çözüm: tek delayed price snapshot (latest_prices). */
 /* Non-equity fallback listesi (PR #270): python tarafındaki otoriter
    universe.manager.NON_EQUITY_SYMBOLS kümesinin birebir kopyası — parity
    guard testi ikisini eşit tutar. Paket instrument_types taşımıyorsa bile
@@ -508,8 +498,8 @@ function show(view){
   }
   if(view==="detay") renderDetail();
   if(view==="sektor"){
-    const input=document.getElementById("sectorSym");
-    if(!input.value) input.value=document.getElementById("detailSym").value;
+    // Arama kutusu BAĞIMSIZ: Detay sembolünü otomatik BASMAZ (kullanıcı
+    // temizleyince boş kalır; QUAGR kendiliğinden geri gelmez). (#286)
     renderSector();
   }
   if(view==="hisseler") renderHisseler();
@@ -929,7 +919,7 @@ function renderPortfolioTable(positions, editable){
     html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>
       <td class=num>${fmt(qty,0)}</td>
       <td class=num>${fmt(avg)}</td>
-      <td class=num title="${quote?('Fiyat kaynağı: '+esc(quote.source)):'fiyat yok'}">${price!==null?fmt(price):"-"}${quote?`<span class=cell-sub>${esc(freshnessLabel(quote.source))}</span>`:'<span class=cell-sub>fiyat yok</span>'}</td>
+      <td class=num data-src="${quote?esc(quote.source):''}">${price!==null?fmt(price):"-"}</td>
       <td class=num>${value!==null?fmt(value):"-"}</td>
       <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
     if(editable) html+=`<td class=pf-actions><button class="pf-edit" title="Düzenle" onclick="event.stopPropagation();editPosition(${i})">✎</button><button class=del title="Sil" onclick="event.stopPropagation();delPosition(${i})">x</button></td>`;
@@ -1003,7 +993,7 @@ function updatePriceHint(){
   const sym=normSymbol(document.getElementById("pfSym").value);
   if(!sym){ el.textContent=""; return; }
   const quote=quoteOrBundle(sym);
-  el.textContent = quote ? `${sym} son fiyat: ${fmt(quote.price)} TL · ${freshnessLabel(quote.source)}` : `${sym} için repo verisinde fiyat bulunamadı.`;
+  el.textContent = quote ? `${sym} son fiyat: ${fmt(quote.price)} TL` : `${sym} için repo verisinde fiyat bulunamadı.`;
 }
 function addPosition(){
   const sym=normSymbol(document.getElementById("pfSym").value);
@@ -1449,7 +1439,7 @@ function renderDetail(){
   let html=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, row))}</span>
     <span class="pill">${esc(candidateModeLabel())}</span></div>`;
   html += `<div class="metric-grid">
-    <div class="metric"><div class="label">Fiyat</div><div class="value">${fmt(quote?quote.price:(row["Fiyat"] ?? row["Kapanış"]))}</div><div class="muted" title="${quote?('Fiyat kaynağı: '+esc(quote.source)):'artifact'}">${quote?esc(freshnessLabel(quote.source)):"tarama fiyatı"}</div></div>
+    <div class="metric" data-src="${quote?esc(quote.source):'artifact'}"><div class="label">Fiyat</div><div class="value">${fmt(quote?quote.price:(row["Fiyat"] ?? row["Kapanış"]))}</div></div>
     <div class="metric"><div class="label">Günlük</div><div class="value ${signCls(chg)}">%${fmt(chg,1)}</div><div class="muted">hafta %${fmt(row["Haftalık Değişim %"],1)}</div></div>
     <div class="metric"><div class="label">V3 Sıra</div><div class="value">${fmtInt(row["V3 Sıra"])}</div><div class="muted">V2 sıra ${fmtInt(row["V2 Sıra"])}</div></div>
     <div class="metric"><div class="label">V3 Skor</div><div class="value">${fmt(row["V3 Skor"],1)}</div><div class="muted">karar ${fmt(row["Karar Skoru"],0)}</div></div>
@@ -1592,14 +1582,14 @@ async function renderHisseler(){
   rows.sort(compareHisseler);
   const lastDay=(()=>{const any=Object.values(bars)[0];return any?fmtDate(any.t[any.t.length-1]):"?";})();
   const scored=rows.filter(r=>r.decision!==null).length;
-  meta.textContent=`${rows.length} hisse · paket kapanışı: ${lastDay} · karar/sağlık/fiyatlama: ${scored} production adayı`;
+  meta.textContent=`${rows.length} hisse · veri tarihi: ${lastDay} · karar/sağlık/fiyatlama: ${scored} production adayı`;
   let html=`<tr><th class="sortable" onclick="setHisselerSort('sym')">Hisse${sortMark("sym")}</th>`+
     `<th class="num sortable" onclick="setHisselerSort('price')">Fiyat${sortMark("price")}</th>`+
     `<th class="num sortable" onclick="setHisselerSort('chg')">Günlük${sortMark("chg")}</th>`+
     `<th>Sağlık</th><th>Değer Analizi</th>`+
     `<th class="num sortable" onclick="setHisselerSort('decision')">Karar${sortMark("decision")}</th></tr>`;
   for(const r of rows){
-    html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td title="Fiyat kaynağı: ${esc(r.source)}"><b>${esc(r.sym)}</b><span class=cell-sub>${esc(freshnessLabel(r.source))}</span></td>`+
+    html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td data-src="${esc(r.source)}"><b>${esc(r.sym)}</b></td>`+
       `<td class=num>${fmt(r.price)}</td>`+
       `<td class="num ${signCls(r.chg)}">${r.chg!==null?fmt(r.chg,1):"-"}</td>`+
       `<td>${esc(r.health||"-")}</td>`+
@@ -1636,9 +1626,13 @@ async function renderSector(){
   const fin=(S.chartBundle && S.chartBundle.fin)||{};
   const me=fin[sym];
   if(!me){ meta.textContent=`${sym} için bilanço verisi pakette yok.`; table.innerHTML=""; return; }
-  if(!me.sector){ meta.textContent=`${sym} için sektör bilgisi pakette yok (harita eşleşmedi).`; table.innerHTML=""; return; }
+  // Gruplama: onaylı curated_subsector (ör. QUAGR→Seramik-Granit) varsa ONA
+  // göre; yoksa kaba `sector`e düş (geriye uyum — paket henüz curated taşımıyorsa). (#286)
+  const groupOf=f=>(f && f.curated_subsector) || (f && f.sector) || "";
+  const myGroup=groupOf(me);
+  if(!myGroup){ meta.textContent=`${sym} için sektör bilgisi pakette yok (harita eşleşmedi).`; table.innerHTML=""; return; }
   const rows=Object.entries(fin)
-    .filter(([,f])=>f && f.sector===me.sector)
+    .filter(([,f])=>f && groupOf(f)===myGroup)
     .map(([s,f])=>{
       const eq=num(f.equity_spot), nd=num(f.net_debt);
       return {sym:s, roe:num(f.roe), net_margin:num(f.net_margin),
@@ -1655,7 +1649,7 @@ async function renderSector(){
   rows.forEach(r=>{ r.score=(r._p && r._p.length>=2)
     ? Math.round(r._p.reduce((a,b)=>a+b,0)/r._p.length) : null; });
   rows.sort((a,b)=>(b.score??-1)-(a.score??-1) || a.sym.localeCompare(b.sym));
-  meta.textContent=`${me.sector} · ${rows.length} hisse · yeşil=sektör içinde temel verisi daha uygun`;
+  meta.textContent=`${myGroup} · ${rows.length} hisse · yeşil=grup içinde temel verisi daha uygun`;
   let html="<tr><th>Hisse</th><th class=num>Uygunluk</th>"+
     SECTOR_DIMS.map(d=>`<th class=num>${d[2]}</th>`).join("")+"</tr>";
   for(const r of rows){
