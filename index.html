@@ -84,6 +84,11 @@
   .pf-add-block{border-top:2px solid var(--acc);margin-top:16px;padding-top:12px;}
   .pf-add-block h3{font-size:14px;letter-spacing:0;margin-bottom:4px;color:var(--acc);}
   .portfolio-head .pf-role{font-size:10px;font-weight:600;color:var(--sub);}
+  /* Inline edit (PR C2): kendi portföy satırı düzenleme */
+  .pf-actions{white-space:nowrap;}
+  .pf-edit{color:var(--acc);background:none;border:none;font-size:15px;cursor:pointer;padding:0 6px;}
+  .pf-editing input{width:100%;padding:5px;font-size:13px;margin:0;}
+  .pf-editing td{vertical-align:middle;}
   .metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0 10px;}
   .metric{border:1px solid var(--line);border-radius:8px;padding:8px;background:#fbfcfd;}
   .metric .label{font-size:10px;color:var(--sub);font-weight:700;}
@@ -338,6 +343,7 @@ const S = {
   candidateRows: [],
   rowBySymbol: {},
   positions: [],
+  editingPos: null,   // kendi portföyünde düzenlenen satır indeksi (yoksa null)
   relatedPortfolios: [],
   artifactInfo: {},
   hisselerSort: {key:"sym", dir:1},
@@ -894,6 +900,17 @@ function renderPortfolioTable(positions, editable){
   html += editable ? "<th></th></tr>" : "</tr>";
   positions.forEach((p,i)=>{
     const sym=normSymbol(p.symbol);
+    // Kendi portföyünde bu satır düzenleniyorsa input satırı çiz (izlenen
+    // portföyler için editable=false; düzenle akışı hiç görünmez).
+    if(editable && S.editingPos===i){
+      html+=`<tr class="pf-editing"><td><input id="pfEditSym" value="${esc(sym)}"></td>
+        <td class=num><input id="pfEditQty" type="number" inputmode="decimal" value="${esc(p.quantity)}"></td>
+        <td class=num><input id="pfEditCost" type="number" inputmode="decimal" value="${esc(p.avg_cost)}"></td>
+        <td class="num muted" colspan=2>düzenleniyor…</td>
+        <td class=num><button class="btn small" onclick="saveEditPosition(${i})">Kaydet</button></td>
+        <td><button class="btn small gray" onclick="cancelEditPosition()">İptal</button></td></tr>`;
+      return;
+    }
     const quote=quoteOrBundle(sym);
     const price=quote ? quote.price : null;
     const qty=num(p.quantity), avg=num(p.avg_cost);
@@ -905,10 +922,29 @@ function renderPortfolioTable(positions, editable){
       <td class=num title="${quote?('Fiyat kaynağı: '+esc(quote.source)):'fiyat yok'}">${price!==null?fmt(price):"-"}${quote?`<span class=cell-sub>${esc(freshnessLabel(quote.source))}</span>`:'<span class=cell-sub>fiyat yok</span>'}</td>
       <td class=num>${value!==null?fmt(value):"-"}</td>
       <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
-    if(editable) html+=`<td><button class=del onclick="event.stopPropagation();delPosition(${i})">x</button></td>`;
+    if(editable) html+=`<td class=pf-actions><button class="pf-edit" title="Düzenle" onclick="event.stopPropagation();editPosition(${i})">✎</button><button class=del title="Sil" onclick="event.stopPropagation();delPosition(${i})">x</button></td>`;
     html+="</tr>";
   });
   return html+"</table></div>";
+}
+/* Inline edit (PR C2): kendi portföy satırını sil-ekle olmadan düzenle.
+   Save/sync sözleşmesi DEĞİŞMEZ — Kaydet, add/del ile aynı savePortfolio'yu
+   çağırır (anlık sync); İptal orijinali korur (S.positions'a dokunulmaz). */
+function editPosition(i){ S.editingPos=i; renderPortfolio(); }
+function cancelEditPosition(){ S.editingPos=null; renderPortfolio(); }
+function saveEditPosition(i){
+  const sym=normSymbol(document.getElementById("pfEditSym").value);
+  const qty=Number(document.getElementById("pfEditQty").value);
+  const cost=Number(document.getElementById("pfEditCost").value);
+  if(!sym||!Number.isFinite(qty)||qty<=0||!Number.isFinite(cost)||cost<=0){
+    msg("Sembol, adet ve maliyeti doldurun.","err"); return; }
+  if(!S.positions[i]) return;
+  // Aynı sembole başka satırda taşınırsa çakışma: mevcut davranışla tutarlı,
+  // yalnız bu satırı güncelle (birleştirme addPosition'da; burada in-place).
+  S.positions[i]={...S.positions[i], symbol:sym, quantity:qty, avg_cost:cost};
+  S.editingPos=null;
+  renderPortfolio();
+  savePortfolio();  // add/del ile aynı anlık-sync akışı
 }
 function renderPortfolioGroup(title, positions, editable, role){
   const totals=portfolioTotals(positions);
@@ -942,6 +978,7 @@ async function loadPortfolio(){
   try{
     const data = await readJson(pfPath(S.profile));
     S.positions = (data && Array.isArray(data.positions)) ? data.positions : [];
+    S.editingPos = null;   // yeniden yüklemede eski düzenleme indeksi bayat olmasın
     S.relatedPortfolios = [];
     for(const slug of parseRelatedProfiles(S.relatedProfiles)){
       const rel = await readJson(pfPath(slug));
