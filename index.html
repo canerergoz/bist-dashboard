@@ -123,6 +123,21 @@
     .form-grid{grid-template-columns:1fr;}
     .metric-grid{grid-template-columns:1fr 1fr;}
   }
+  /* Telefon yatay (landscape) kısa ekran: sticky header + nav dikey alanı
+     yiyor, tablolar 72vh'de sıkışıyor. Sadece boşluk/yükseklik ayarı —
+     içerik veya özellik gizlenmez, sütun düzeni korunur. Yazı boyutu (#289)
+     --fs ile uyumlu kalır. (#290) */
+  @media (orientation:landscape) and (max-height:500px){
+    header{padding:8px 14px 6px;}
+    .sub{margin-top:1px;}
+    nav{margin-top:6px;padding-top:6px;}
+    nav button{padding:6px 6px;}
+    main{padding:8px 12px;}
+    .card{padding:9px;margin-bottom:9px;}
+    /* Header küçüldüğü için tabloya daha çok dikey alan bırak */
+    .table-wrap{max-height:82vh;}
+    .metric-grid{grid-template-columns:repeat(4,minmax(0,1fr));}
+  }
   /* --- Karne v2 (okul karnesi) --- */
   .grade-row{display:flex;align-items:center;gap:10px;padding:10px 0;
              border-bottom:1px solid var(--line);}
@@ -275,7 +290,7 @@
       <div class="detail-symbol-row">
         <input id="detailSym" placeholder="Sembol (BIST evreninden herhangi biri)" oninput="detailSymbolEdited()">
         <button class="btn small" onclick="renderDetail()">Aç</button>
-        <button class="btn small gray" onclick="makeDefaultDetailSymbol()">Ana yap</button>
+        <button class="btn small gray" onclick="makeDefaultDetailSymbol()" title="Bu hisse Detay sekmesinde varsayılan açılır.">Varsayılan yap</button>
       </div>
       <div class="muted" id="mgbStatus" style="margin-top:8px">grafik verisi bekleniyor…</div>
       <div class="chart-wrap">
@@ -535,7 +550,13 @@ function show(view){
   for (const v of ["adaylar","karne","portfoy","detay","sektor","hisseler"]){
     const b=document.getElementById("nav-"+v); if(b) b.classList.toggle("on", v===view);
   }
-  if(view==="detay") renderDetail();
+  if(view==="detay"){
+    // Sekme AÇILIŞINDA (kullanıcı yazarken değil) boşsa varsayılan/portföy/aday
+    // sembolü doldurulur; renderDetail'in kendisi artık zorla-doldurmaz, böylece
+    // input temizlenince sembol geri basılmaz. (#290)
+    ensureDetailSymbol();
+    renderDetail();
+  }
   if(view==="sektor"){
     // Arama kutusu BAĞIMSIZ: Detay sembolünü otomatik BASMAZ (kullanıcı
     // temizleyince boş kalır; QUAGR kendiliğinden geri gelmez). (#286)
@@ -545,6 +566,14 @@ function show(view){
 }
 function fmt(x, d){ const n=Number(x);
   return Number.isFinite(n) ? n.toLocaleString("tr-TR",{minimumFractionDigits:d??2,maximumFractionDigits:d??2}) : "-"; }
+/* Maliyet/giriş fiyatı gösterimi: para formatından AYRI. Kullanıcının girdiği
+   hassasiyeti korur (2 ondalığa YUVARLAMAZ) ve virgülün sağındaki gereksiz
+   sondaki sıfırları gizler. 3,697→"3,697" · 3,690→"3,69" · 3,600→"3,6" ·
+   3,000→"3". En çok 6 ondalık (float gürültüsünü de temizler). (#290) */
+function fmtCost(x){
+  const n=num(x);
+  return n!==null ? n.toLocaleString("tr-TR",{minimumFractionDigits:0,maximumFractionDigits:6}) : "-";
+}
 function fmtInt(x){ const n=Number(x); return Number.isFinite(n) ? n.toLocaleString("tr-TR",{maximumFractionDigits:0}) : "-"; }
 /* Görünen her tarih gün/ay/yıl (kullanıcı tercihi 2026-07-05). İç mantıkta
    (asOf sıralaması, bar index'leri) ISO kalır — string karşılaştırması ISO'ya bağlı. */
@@ -767,7 +796,7 @@ function makeDefaultDetailSymbol(){
   const sym=detailInputSymbol();
   if(!sym){ msg("Önce bir sembol açın.","err"); return; }
   localStorage.setItem(LS.defaultDetailSymbol, sym);
-  msg(`${sym} ana sembol yapıldı.`);
+  msg(`${sym} varsayılan hisse yapıldı (Detay sekmesi bununla açılır).`);
 }
 
 async function loadMarketData(){
@@ -957,7 +986,7 @@ function renderPortfolioTable(positions, editable){
     const pnl=(price!==null && avg!==null)?((price/avg-1)*100):null;
     html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>
       <td class=num>${fmt(qty,0)}</td>
-      <td class=num>${fmt(avg)}</td>
+      <td class=num>${fmtCost(avg)}</td>
       <td class=num data-src="${quote?esc(quote.source):''}">${price!==null?fmt(price):"-"}</td>
       <td class=num>${value!==null?fmt(value):"-"}</td>
       <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
@@ -973,9 +1002,10 @@ function editPosition(i){ S.editingPos=i; renderPortfolio(); }
 function cancelEditPosition(){ S.editingPos=null; renderPortfolio(); }
 function saveEditPosition(i){
   const sym=normSymbol(document.getElementById("pfEditSym").value);
-  const qty=Number(document.getElementById("pfEditQty").value);
-  const cost=Number(document.getElementById("pfEditCost").value);
-  if(!sym||!Number.isFinite(qty)||qty<=0||!Number.isFinite(cost)||cost<=0){
+  // num() ile parse: virgül/nokta güvenli, maliyet hassasiyeti korunur. (#290)
+  const qty=num(document.getElementById("pfEditQty").value);
+  const cost=num(document.getElementById("pfEditCost").value);
+  if(!sym||qty===null||qty<=0||cost===null||cost<=0){
     msg("Sembol, adet ve maliyeti doldurun.","err"); return; }
   if(!S.positions[i]) return;
   // Aynı sembole başka satırda taşınırsa çakışma: mevcut davranışla tutarlı,
@@ -1036,9 +1066,11 @@ function updatePriceHint(){
 }
 function addPosition(){
   const sym=normSymbol(document.getElementById("pfSym").value);
-  const qty=Number(document.getElementById("pfQty").value);
-  const cost=Number(document.getElementById("pfCost").value);
-  if(!sym||!Number.isFinite(qty)||qty<=0||!Number.isFinite(cost)||cost<=0){
+  // num() ile parse: virgül/nokta ondalık ayırıcı ve TR binlik güvenli;
+  // maliyet hassasiyeti (örn. 3,697) yuvarlanmadan number'a çevrilir. (#290)
+  const qty=num(document.getElementById("pfQty").value);
+  const cost=num(document.getElementById("pfCost").value);
+  if(!sym||qty===null||qty<=0||cost===null||cost<=0){
     msg("Sembol, adet ve maliyeti doldurun.","err"); return; }
   const existing=S.positions.find(p=>normSymbol(p.symbol)===sym);
   if(existing){ existing.symbol=sym; existing.quantity=qty; existing.avg_cost=cost; }
@@ -1450,7 +1482,9 @@ function selectDetail(symbol){
 function renderDetail(){
   const out=document.getElementById("detailOut");
   if(!out) return;
-  ensureDetailSymbol();
+  // NOT: ensureDetailSymbol burada ÇAĞRILMAZ — auto-fill yalnız sekme açılışında
+  // (show), boot'ta ve arka plan paket yüklemesinde yapılır. Aksi halde oninput
+  // ile tetiklenen render, temizlenen input'a sembolü geri basardı. (#290)
   let sym=normSymbol(document.getElementById("detailSym").value);
   if(!sym){ updateDetailHeading("", null); out.innerHTML='<div class="muted">Detay için sembol gir.</div>'; return; }
   const row=S.rowBySymbol[sym];
