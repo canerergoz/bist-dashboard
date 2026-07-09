@@ -88,15 +88,20 @@
   .msg.err{background:#f7e9e9;color:var(--neg);display:block;}
   .disclaimer{font-size:calc(10px * var(--fs));color:var(--sub);text-align:center;padding:10px 16px 18px;}
   .del{color:var(--neg);background:none;border:none;font-size:calc(16px * var(--fs));cursor:pointer;padding:0 6px;}
-  .portfolio-block{border-top:1px solid var(--line);padding-top:10px;margin-top:10px;}
-  .portfolio-block:first-of-type{border-top:none;padding-top:0;margin-top:0;}
+  /* Her kullanıcı portföyü ayrı KART (iç içe girmesin): çerçeve + radius +
+     boşluk; mobilde kartlar arasında net ayrım kalır. Davranış değişmez. */
+  .portfolio-block{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:12px;background:var(--card);}
+  .portfolio-block:first-of-type{margin-top:0;}
+  .chg-arrow{margin-left:3px;font-weight:700;}
+  .wl-star{background:none;border:none;cursor:pointer;font-size:calc(15px * var(--fs));
+    color:var(--sub);padding:0 4px;line-height:1;}
+  .wl-star.on{color:#d4a017;}
   .portfolio-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin-bottom:6px;}
   .portfolio-head h3{font-size:calc(13px * var(--fs));letter-spacing:0;}
   /* Giriş formu görsel olarak AYRI blok — annenin (izlenen) portföyünün
      hemen altına yapışıp "onun portföyüne ekliyorum" algısı yaratmasın. */
   .pf-add-block{border-top:2px solid var(--acc);margin-top:16px;padding-top:12px;}
   .pf-add-block h3{font-size:calc(14px * var(--fs));letter-spacing:0;margin-bottom:4px;color:var(--acc);}
-  .portfolio-head .pf-role{font-size:calc(10px * var(--fs));font-weight:600;color:var(--sub);}
   /* Inline edit (PR C2): kendi portföy satırı düzenleme */
   .pf-actions{white-space:nowrap;}
   .pf-edit{color:var(--acc);background:none;border:none;font-size:calc(15px * var(--fs));cursor:pointer;padding:0 6px;}
@@ -261,18 +266,9 @@
   <section id="view-portfoy" class="hide">
     <div class="card">
       <h2>Portföy</h2>
-      <div class="muted" style="margin-bottom:8px">
-        Kendi portföyünü bu ekrandan düzenlersin. İzlenen portföyler (ör. anne,
-        anneanne) salt-görüntüdür — her sahibi kendi arayüzünden kaydeder; sen
-        Yenile'ye bastığında güncel hali görünür (anlık değil).
-      </div>
       <div id="pfWrap"></div>
       <div class="pf-add-block">
         <h3 id="pfAddHeading">Kendi Portföyüme Hisse Ekle</h3>
-        <div class="muted" id="pfAddNote" style="margin-bottom:8px">
-          Bu form yalnızca KENDİ portföyüne ekler; izlenen (ör. anne) portföyleri
-          salt-görüntüdür, bu kutular onları değiştirmez. Birden fazla hisse ekleyebilirsin.
-        </div>
         <div class="form-grid">
           <input id="pfSym" placeholder="Sembol (örn. BIMAS)" oninput="updatePriceHint()">
           <input id="pfQty" type="number" inputmode="decimal" placeholder="Adet">
@@ -336,6 +332,8 @@
 
   <section id="view-hisseler" class="hide">
     <div class="card">
+      <h3 style="margin-bottom:6px">Takip Listem <span class="muted" style="font-weight:normal">(en fazla 10)</span></h3>
+      <div id="watchlistWrap" style="margin-bottom:12px"></div>
       <h2>Tüm Hisseler</h2>
       <input id="hisselerFilter" placeholder="Ara (sembol, şirket veya sektör)" oninput="renderHisseler()">
       <div class="muted" id="hisselerMeta">yükleniyor…</div>
@@ -378,6 +376,7 @@ const LS = {
   related:"bist_related_profiles",
   defaultDetailSymbol:"bist_default_detail_symbol",
   fontSize:"bist_font_size",
+  watchlist:"bist_watchlist_symbols",
 };
 /* Yazı Boyutu (PR #289): küçük/orta/büyük; localStorage'da hatırlanır;
    geçersiz değer medium'a düşer. Kök data-font-size CSS --fs'i ölçekler
@@ -584,6 +583,33 @@ function fmtDate(value){
   return m ? `${m[3]}/${m[2]}/${m[1]}` : (s||"-");
 }
 function signCls(x){ const n=Number(x); return !Number.isFinite(n)?"":(n>0?"pos":(n<0?"neg":"")); }
+/* Günlük değişim sanity guard'ı (DUNYH vakası): paket bar'ında önceki kapanış
+   günlerce donmuş kalıp gerçek fiyata sıçrayınca (DUNYH: 3 gün 109,1 → 145,0)
+   son-iki-bar farkı %32,9 gibi yanıltıcı bir "günlük" değişim üretir. BIST'te
+   serbest marjlı istisnalar olabildiğinden değer CLAMP EDİLMEZ ve düzeltilmez;
+   normal pay bandı (±%10) dışına taşan değişim yalnız "doğrulanamadı" sayılır
+   ve tabloda güvenilir değişim gibi gösterilmez. Scoring'e bağlanmaz. */
+const DAILY_CHANGE_SANITY_LIMIT_PCT=10;
+function dailyChangeAnomalous(chg){
+  const n=num(chg);
+  return n!==null && Math.abs(n)>DAILY_CHANGE_SANITY_LIMIT_PCT;
+}
+function changeArrow(chg){
+  const n=num(chg);
+  if(n===null || n===0 || dailyChangeAnomalous(n)) return "";
+  return n>0
+    ? '<span class="chg-arrow pos" title="yükseldi" aria-label="yükseldi">↑</span>'
+    : '<span class="chg-arrow neg" title="düştü" aria-label="düştü">↓</span>';
+}
+function changeCellCls(chg){
+  return dailyChangeAnomalous(chg) ? "" : signCls(chg);
+}
+function fmtChangeCell(chg){
+  const n=num(chg);
+  if(n===null) return "-";
+  if(dailyChangeAnomalous(n)) return '<span class="muted" title="günlük değişim doğrulanamadı">—</span>';
+  return `${fmt(n,1)}${changeArrow(n)}`;
+}
 function num(value){
   if(value===null || value===undefined || typeof value==="boolean") return null;
   if(typeof value==="number") return Number.isFinite(value) ? value : null;
@@ -1069,7 +1095,7 @@ function renderPortfolioTable(positions, editable){
     html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>
       <td class=num>${fmt(qty,0)}</td>
       <td class=num>${fmtCost(avg)}</td>
-      <td class=num data-src="${quote?esc(quote.source):''}">${price!==null?fmt(price):"-"}</td>
+      <td class=num data-src="${quote?esc(quote.source):''}">${price!==null?fmt(price):"-"}${changeArrow(dailyChangeFor(sym))}</td>
       <td class=num>${value!==null?fmt(value):"-"}</td>
       <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
     if(editable) html+=`<td class=pf-actions><button class="pf-edit" title="Düzenle" onclick="event.stopPropagation();editPosition(${i})">✎</button><button class=del title="Sil" onclick="event.stopPropagation();delPosition(${i})">x</button></td>`;
@@ -1097,13 +1123,14 @@ function saveEditPosition(i){
   renderPortfolio();
   savePortfolio();  // add/del ile aynı anlık-sync akışı
 }
-function renderPortfolioGroup(title, positions, editable, role){
+function renderPortfolioGroup(title, positions, editable){
+  // Kart başlığı SADE (yalnız profil adı); own/watched ayrımı görsel etiketle
+  // değil DAVRANIŞLA anlaşılır: editable=false kartta edit/sil hiç çizilmez.
   const totals=portfolioTotals(positions);
   const pnlText=totals.pnl!==null ? ` | K/Z: <b class="${signCls(totals.pnl)}">%${fmt(totals.pnl,1)}</b>` : "";
   const pricedText=positions.length ? ` | fiyatlı: ${totals.priced}/${positions.length}` : "";
-  const roleTag=role ? ` <span class="pf-role">(${esc(role)})</span>` : "";
   return `<div class="portfolio-block">
-    <div class="portfolio-head"><h3>${esc(title)}${roleTag}</h3><div class="muted">Piyasa: <b>${fmt(totals.total)} TL</b> | Maliyet: <b>${fmt(totals.cost)} TL</b>${pnlText}${pricedText}</div></div>
+    <div class="portfolio-head"><h3>${esc(title)}</h3><div class="muted">Piyasa: <b>${fmt(totals.total)} TL</b> | Maliyet: <b>${fmt(totals.cost)} TL</b>${pnlText}${pricedText}</div></div>
     ${renderPortfolioTable(positions, editable)}
   </div>`;
 }
@@ -1111,10 +1138,9 @@ function renderPortfolio(){
   const wrap=document.getElementById("pfWrap");
   const own=slugify(S.profile);
   const activeTitle=`${own} portföyü`;
-  let html=renderPortfolioGroup(activeTitle, S.positions, true, "senin portföyün");
+  let html=renderPortfolioGroup(activeTitle, S.positions, true);
   for(const item of S.relatedPortfolios){
-    html += renderPortfolioGroup(`${item.slug} portföyü`, item.positions, false,
-                                 "izleniyor · salt-görüntü");
+    html += renderPortfolioGroup(`${item.slug} portföyü`, item.positions, false);
   }
   if(!S.relatedPortfolios.length && parseRelatedProfiles(S.relatedProfiles).length){
     html += `<div class="portfolio-block"><div class="muted">İzlenen profil dosyası henüz yok.</div></div>`;
@@ -1677,6 +1703,81 @@ function bundleQuote(symbol){
           prev:n>1?bars.c[n-2]:null};
 }
 function quoteOrBundle(symbol){ return priceFor(symbol) || bundleQuote(symbol); }
+/* Tek noktadan günlük değişim: varsa gecikmeli snapshot yüzdesi, yoksa
+   paketin son iki kapanışından hesap (Hisseler + Takip Listesi + Portföy
+   aynı değeri görsün). Anomaly kararı fmtChangeCell/changeCellCls'de. */
+function dailyChangeFor(symbol){
+  const sym=normSymbol(symbol);
+  const quote=quoteOrBundle(sym);
+  const snap=quote ? num(quote.changePct) : null;
+  if(snap!==null) return snap;
+  const bars=S.chartBundle && (S.chartBundle.bars||{})[sym];
+  if(!bars || !bars.c || bars.c.length<2) return null;
+  const n=bars.c.length;
+  return bars.c[n-2] ? ((bars.c[n-1]/bars.c[n-2]-1)*100) : null;
+}
+
+/* ===== Takip Listesi (localStorage, kullanıcıya özel, en fazla 10) =====
+   Yalnız görüntüleme katmanı: sembol listesi cihazda tutulur, repo'ya
+   yazılmaz, scoring/candidate/portföy davranışına bağlanmaz. */
+const WATCHLIST_MAX=10;
+function watchlistGet(){
+  try{
+    const raw=JSON.parse(localStorage.getItem(LS.watchlist)||"[]");
+    if(!Array.isArray(raw)) return [];
+    const out=[];
+    for(const s of raw){
+      const sym=normSymbol(s);
+      if(sym && !out.includes(sym)) out.push(sym);
+    }
+    return out.slice(0, WATCHLIST_MAX);
+  }catch(e){ return []; }
+}
+function watchlistSave(list){
+  localStorage.setItem(LS.watchlist, JSON.stringify(list.slice(0, WATCHLIST_MAX)));
+}
+function watchlistHas(symbol){ return watchlistGet().includes(normSymbol(symbol)); }
+function watchlistAdd(symbol){
+  const sym=normSymbol(symbol);
+  if(!sym) return false;
+  const list=watchlistGet();
+  if(list.includes(sym)) return false;              // duplicate eklenmez
+  if(list.length>=WATCHLIST_MAX){
+    msg(`Takip listesi en fazla ${WATCHLIST_MAX} hisse alır.`,"err");
+    return false;
+  }
+  list.push(sym);
+  watchlistSave(list);
+  return true;
+}
+function watchlistRemove(symbol){
+  watchlistSave(watchlistGet().filter(s=>s!==normSymbol(symbol)));
+  renderHisseler();
+}
+function watchlistToggle(symbol){
+  if(watchlistHas(symbol)) watchlistRemove(symbol);
+  else if(watchlistAdd(symbol)) renderHisseler();
+}
+function renderWatchlist(){
+  const wrap=document.getElementById("watchlistWrap");
+  if(!wrap) return;
+  const list=watchlistGet();
+  if(!list.length){
+    wrap.innerHTML='<div class="muted">Takip listen boş — tablodan ☆ ile ekle.</div>';
+    return;
+  }
+  let html='<div class="table-wrap"><table><tr><th>Hisse</th><th>Şirket Adı</th><th class=num>Fiyat</th><th class=num>Günlük</th><th></th></tr>';
+  for(const sym of list){
+    const quote=quoteOrBundle(sym);
+    const chg=dailyChangeFor(sym);
+    html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>`+
+      `<td>${esc(companyNameFor(sym, S.rowBySymbol[sym]||{}))}</td>`+
+      `<td class=num>${quote?fmt(quote.price):"-"}</td>`+
+      `<td class="num ${changeCellCls(chg)}">${fmtChangeCell(chg)}</td>`+
+      `<td><button class="del" title="Listeden çıkar" onclick="event.stopPropagation();watchlistRemove('${sym}')">x</button></td></tr>`;
+  }
+  wrap.innerHTML=html+"</table></div>";
+}
 function setHisselerSort(key){
   const current=S.hisselerSort || {key:"sym", dir:1};
   if(current.key===key) current.dir *= -1;
@@ -1694,7 +1795,7 @@ function compareHisseler(a,b){
   const sort=S.hisselerSort || {key:"sym", dir:1};
   const key=sort.key || "sym";
   const dir=sort.dir || 1;
-  if(["price","chg","decision"].includes(key)){
+  if(["price","chg"].includes(key)){
     const av=num(a[key]), bv=num(b[key]);
     if(av!==null || bv!==null){
       if(av===null) return 1;
@@ -1713,6 +1814,7 @@ async function renderHisseler(){
   catch(e){ meta.textContent="Veri okunamadı: "+e.message; return; }
   const bars=(S.chartBundle&&S.chartBundle.bars)||{};
   const fin=(S.chartBundle&&S.chartBundle.fin)||{};
+  renderWatchlist();
   const q=normSymbol(document.getElementById("hisselerFilter").value);
   const rows=[];
   for(const sym of Object.keys(bars)){
@@ -1720,37 +1822,29 @@ async function renderHisseler(){
     const sector=(fin[sym]&&fin[sym].sector)||"";
     const candidate=S.rowBySymbol[sym] || {};
     const company=companyNameFor(sym, candidate);
-    const health=String(candidate["Şirket Sağlığı"] || "").trim();
-    const pricing=String(candidate["Fiyatlama"] || "").trim();
     if(q && !sym.includes(q) && !sector.toUpperCase().includes(q) &&
-       !company.toUpperCase().includes(q) && !health.toUpperCase().includes(q) &&
-       !pricing.toUpperCase().includes(q)) continue;
+       !company.toUpperCase().includes(q)) continue;
     const quote=quoteOrBundle(sym);
     if(!quote) continue;
-    const b=bars[sym], n=b.c.length;
-    const snapshotChg=num(quote.changePct);
-    const chg=snapshotChg!==null ? snapshotChg : ((n>1 && b.c[n-2])?((b.c[n-1]/b.c[n-2]-1)*100):null);
-    rows.push({
-      sym, sector, price:quote.price, source:quote.source, chg,
-      health, pricing, decision:num(candidate["Karar Skoru"]), company,
-    });
+    const chg=dailyChangeFor(sym);
+    rows.push({sym, sector, price:quote.price, source:quote.source, chg, company});
   }
   rows.sort(compareHisseler);
   const lastDay=(()=>{const any=Object.values(bars)[0];return any?fmtDate(any.t[any.t.length-1]):"?";})();
-  const scored=rows.filter(r=>r.decision!==null).length;
-  meta.textContent=`${rows.length} hisse · veri tarihi: ${lastDay} · karar/sağlık/fiyatlama: ${scored} production adayı`;
+  meta.textContent=`${rows.length} hisse · veri tarihi: ${lastDay}`;
   let html=`<tr><th class="sortable" onclick="setHisselerSort('sym')">Hisse${sortMark("sym")}</th>`+
+    `<th>Şirket Adı</th>`+
     `<th class="num sortable" onclick="setHisselerSort('price')">Fiyat${sortMark("price")}</th>`+
     `<th class="num sortable" onclick="setHisselerSort('chg')">Günlük${sortMark("chg")}</th>`+
-    `<th>Sağlık</th><th>Değer Analizi</th>`+
-    `<th class="num sortable" onclick="setHisselerSort('decision')">Karar${sortMark("decision")}</th></tr>`;
+    `<th></th></tr>`;
   for(const r of rows){
+    const starred=watchlistHas(r.sym);
     html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td data-src="${esc(r.source)}"><b>${esc(r.sym)}</b></td>`+
+      `<td>${esc(r.company)}</td>`+
       `<td class=num>${fmt(r.price)}</td>`+
-      `<td class="num ${signCls(r.chg)}">${r.chg!==null?fmt(r.chg,1):"-"}</td>`+
-      `<td>${esc(r.health||"-")}</td>`+
-      `<td>${esc(valueClass(r.pricing))}</td>`+
-      `<td class=num>${r.decision!==null?fmt(r.decision,0):"-"}</td></tr>`;
+      `<td class="num ${changeCellCls(r.chg)}">${fmtChangeCell(r.chg)}</td>`+
+      `<td><button class="wl-star${starred?" on":""}" title="${starred?"Takip listesinden çıkar":"Takip listesine ekle"}" `+
+      `onclick="event.stopPropagation();watchlistToggle('${r.sym}')">${starred?"★":"☆"}</button></td></tr>`;
   }
   table.innerHTML=html;
 }
