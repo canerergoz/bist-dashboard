@@ -16,8 +16,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>BIST Assistant</title>
 <style>
+  /* pos/neg netleştirildi (PR #303): eski --neg tonu kahverengiye kayıyordu;
+     ok ve değer aynı token'ı kullandığından ikisi birden düzelir. */
   :root{--fs:1;--bg:#f5f6f7;--card:#ffffff;--ink:#22303c;--sub:#6b7f94;--line:#e0e4e8;
-        --pos:#2f6f44;--neg:#8b3a3a;--acc:#2980b9;--warn:#b8860b;--soft:#eef3f7;}
+        --pos:#1e8e3e;--neg:#d92b2b;--acc:#2980b9;--warn:#b8860b;--soft:#eef3f7;}
   /* Yazı Boyutu (PR #289): tüm px fontları --fs ile ölçeklenir; default 1 = birebir aynı. */
   :root[data-font-size="small"]{--fs:0.92;}
   :root[data-font-size="large"]{--fs:1.12;}
@@ -92,7 +94,26 @@
      boşluk; mobilde kartlar arasında net ayrım kalır. Davranış değişmez. */
   .portfolio-block{border:1px solid var(--line);border-radius:10px;padding:12px;margin-top:12px;background:var(--card);}
   .portfolio-block:first-of-type{margin-top:0;}
-  .chg-arrow{margin-left:3px;font-weight:700;}
+  .chg-arrow{margin-left:3px;font-weight:700;font-size:calc(15px * var(--fs));line-height:1;}
+  /* Hisseler + Takip tablosu mobil sığdırma (PR #303): sabit layout; Hisse/
+     Fiyat/Günlük/yıldız TAM görünür, taviz yalnız Şirket Adı'nda (ellipsis).
+     Yatay kaydırma gerekmez; tam ad title attribute'unda kalır. */
+  .stocks-table{table-layout:fixed;width:100%;}
+  .stocks-table th,.stocks-table td{padding:7px 3px;}
+  .stocks-table .col-sym{width:58px;}
+  .stocks-table .col-price{width:74px;}
+  .stocks-table .col-chg{width:66px;}
+  .stocks-table .col-star{width:34px;}
+  .stocks-table td.name-cell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;color:var(--sub);}
+  .stocks-table td.num,.stocks-table th.num{white-space:nowrap;}
+  @media (max-width:480px){
+    .stocks-table{font-size:calc(12px * var(--fs));}
+    .stocks-table th,.stocks-table td{padding:6px 2px;}
+    .stocks-table .col-sym{width:52px;}
+    .stocks-table .col-price{width:66px;}
+    .stocks-table .col-chg{width:58px;}
+    .stocks-table .col-star{width:30px;}
+  }
   .wl-star{background:none;border:none;cursor:pointer;font-size:calc(15px * var(--fs));
     color:var(--sub);padding:0 4px;line-height:1;}
   .wl-star.on{color:#d4a017;}
@@ -337,7 +358,7 @@
       <h2>Tüm Hisseler</h2>
       <input id="hisselerFilter" placeholder="Ara (sembol, şirket veya sektör)" oninput="renderHisseler()">
       <div class="muted" id="hisselerMeta">yükleniyor…</div>
-      <div class="table-wrap"><table id="hisselerTable"></table></div>
+      <div class="table-wrap"><table id="hisselerTable" class="stocks-table"></table></div>
       <p class="muted" style="margin-top:6px">
         Fiyatlar son paket verisine göre gösterilir; gün içi gecikmeli fiyat
         hattı ayrı olarak eklenecektir. Satıra dokununca Detay açılır.
@@ -827,19 +848,25 @@ async function loadLatestPrices(){
   }
 }
 
+/* Şirket adı zinciri: aday satırı -> bundle fin.company_name -> "".
+   Repo'da tüm evreni kapsayan isim kaynağı YOK (bundle isimleri yalnız günün
+   aday listesinden gelir, statik fallback 75 sembol) — bu yüzden isimsiz
+   sembolde uzun "bulunamadı" metni YERİNE boş döner; hücre kısa "—" gösterir,
+   Detay başlığı yalnız sembole düşer. Evren-geneli isim haritası ayrı
+   producer/metadata PR işidir; burada elle liste tutulmaz. */
 function companyNameFor(symbol, row){
   const sym=normSymbol(symbol);
   const candidateName=String((row && row["Şirket Adı"]) || "").trim();
   if(candidateName) return candidateName;
   const fin=S.chartBundle && (S.chartBundle.fin||{})[sym];
-  const bundleName=String((fin && fin.company_name) || "").trim();
-  return bundleName || "şirket adı bulunamadı";
+  return String((fin && fin.company_name) || "").trim();
 }
 function updateDetailHeading(symbol, row){
   const el=document.getElementById("detailHeadingText");
   if(!el) return;
   const sym=normSymbol(symbol);
-  el.textContent = sym ? `${sym} — ${companyNameFor(sym, row)}` : "Detay";
+  const name=sym ? companyNameFor(sym, row) : "";
+  el.textContent = sym ? (name ? `${sym} — ${name}` : sym) : "Detay";
 }
 function detailInputSymbol(){
   return normSymbol(document.getElementById("detailSym").value);
@@ -1766,12 +1793,13 @@ function renderWatchlist(){
     wrap.innerHTML='<div class="muted">Takip listen boş — tablodan ☆ ile ekle.</div>';
     return;
   }
-  let html='<div class="table-wrap"><table><tr><th>Hisse</th><th>Şirket Adı</th><th class=num>Fiyat</th><th class=num>Günlük</th><th></th></tr>';
+  let html='<div class="table-wrap"><table class="stocks-table"><tr><th class="col-sym">Hisse</th><th>Şirket Adı</th><th class="col-price num">Fiyat</th><th class="col-chg num">Günlük</th><th class="col-star"></th></tr>';
   for(const sym of list){
     const quote=quoteOrBundle(sym);
     const chg=dailyChangeFor(sym);
+    const company=companyNameFor(sym, S.rowBySymbol[sym]||{});
     html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>`+
-      `<td>${esc(companyNameFor(sym, S.rowBySymbol[sym]||{}))}</td>`+
+      `<td class="name-cell" title="${esc(company)}">${esc(company)||"—"}</td>`+
       `<td class=num>${quote?fmt(quote.price):"-"}</td>`+
       `<td class="num ${changeCellCls(chg)}">${fmtChangeCell(chg)}</td>`+
       `<td><button class="del" title="Listeden çıkar" onclick="event.stopPropagation();watchlistRemove('${sym}')">x</button></td></tr>`;
@@ -1832,15 +1860,15 @@ async function renderHisseler(){
   rows.sort(compareHisseler);
   const lastDay=(()=>{const any=Object.values(bars)[0];return any?fmtDate(any.t[any.t.length-1]):"?";})();
   meta.textContent=`${rows.length} hisse · veri tarihi: ${lastDay}`;
-  let html=`<tr><th class="sortable" onclick="setHisselerSort('sym')">Hisse${sortMark("sym")}</th>`+
+  let html=`<tr><th class="col-sym sortable" onclick="setHisselerSort('sym')">Hisse${sortMark("sym")}</th>`+
     `<th>Şirket Adı</th>`+
-    `<th class="num sortable" onclick="setHisselerSort('price')">Fiyat${sortMark("price")}</th>`+
-    `<th class="num sortable" onclick="setHisselerSort('chg')">Günlük${sortMark("chg")}</th>`+
-    `<th></th></tr>`;
+    `<th class="col-price num sortable" onclick="setHisselerSort('price')">Fiyat${sortMark("price")}</th>`+
+    `<th class="col-chg num sortable" onclick="setHisselerSort('chg')">Günlük${sortMark("chg")}</th>`+
+    `<th class="col-star"></th></tr>`;
   for(const r of rows){
     const starred=watchlistHas(r.sym);
     html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td data-src="${esc(r.source)}"><b>${esc(r.sym)}</b></td>`+
-      `<td>${esc(r.company)}</td>`+
+      `<td class="name-cell" title="${esc(r.company)}">${esc(r.company)||"—"}</td>`+
       `<td class=num>${fmt(r.price)}</td>`+
       `<td class="num ${changeCellCls(r.chg)}">${fmtChangeCell(r.chg)}</td>`+
       `<td><button class="wl-star${starred?" on":""}" title="${starred?"Takip listesinden çıkar":"Takip listesine ekle"}" `+
