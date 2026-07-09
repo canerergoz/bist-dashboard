@@ -108,7 +108,11 @@
   /* Hisseler + Takip tablosu mobil sığdırma (PR #303): sabit layout; Hisse/
      Fiyat/Günlük/yıldız TAM görünür, taviz yalnız Şirket Adı'nda (ellipsis).
      Yatay kaydırma gerekmez; tam ad title attribute'unda kalır. */
-  .stocks-table{table-layout:fixed;width:100%;}
+  .stocks-table{table-layout:fixed;width:100%;min-width:0;max-width:100%;}
+  /* min-width:0 şart (PR #305): global "table{min-width:420px}" (ve ≤420px
+     media'daki 390px) genel tablolar için bilinçlidir (Adaylar/Karne geniş
+     tablolar kabında kaydırır) ama stocks-table'ın sığdırma matematiğini
+     bozar — yalnız bu kapsamda nötralize edilir, global kural KORUNUR. */
   .stocks-table th,.stocks-table td{padding:7px 3px;}
   .stocks-table .col-sym{width:58px;}
   .stocks-table .col-price{width:74px;}
@@ -150,7 +154,10 @@
   .detail-note{font-size:calc(12px * var(--fs));line-height:1.35;color:var(--ink);margin-top:8px;}
   .detail-symbol-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;align-items:center;}
   .detail-symbol-row input{margin:0;}
-  #hisselerTable{min-width:620px;}
+  /* PR #305: Hisseler tablosunu 620px'e zorlayan eski ID-selector kuralı
+     (#268, 6 kolonlu tablo dönemi) buradan kaldırıldı — ID specificity'si
+     .stocks-table mobil layout'unu eziyor, yatay kaydırmayı geri getiriyordu.
+     Guard testi CSS'te bu ID ile kural kalmamasını pinler. */
   @media (max-width:420px){
     main{padding:10px;}
     .card{padding:10px;}
