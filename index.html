@@ -15,6 +15,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>BIST Assistant</title>
+<!-- Stale-cache azaltma (PR #304): GitHub Pages HTML'i max-age=600 ile döner;
+     bu meta'lar HTTP header'ını her tarayıcıda geçersiz KILAMAZ (etki sınırlı)
+     ama zararsızdır. Asıl teşhis görünür sürüm etiketi + stale-UI banner'ıdır. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <style>
   /* pos/neg netleştirildi (PR #303): eski --neg tonu kahverengiye kayıyordu;
      ok ve değer aynı token'ı kullandığından ikisi birden düzelir. */
@@ -89,6 +95,10 @@
   .msg.ok{background:#e7f3ea;color:var(--pos);display:block;}
   .msg.err{background:#f7e9e9;color:var(--neg);display:block;}
   .disclaimer{font-size:calc(10px * var(--fs));color:var(--sub);text-align:center;padding:10px 16px 18px;}
+  .version-note{margin-top:4px;font-size:calc(10px * var(--fs));color:var(--sub);}
+  .stale-banner{display:block;margin:8px 12px 0;padding:8px 10px;border:1px solid var(--warn);
+    border-radius:8px;background:#fdf6e3;color:#7a5b00;font-size:calc(12px * var(--fs));}
+  .stale-banner.hide{display:none;}
   .del{color:var(--neg);background:none;border:none;font-size:calc(16px * var(--fs));cursor:pointer;padding:0 6px;}
   /* Her kullanıcı portföyü ayrı KART (iç içe girmesin): çerçeve + radius +
      boşluk; mobilde kartlar arasında net ayrım kalır. Davranış değişmez. */
@@ -228,6 +238,9 @@
   </nav>
 </header>
 <main>
+  <!-- Stale-UI teşhis banner'ı (PR #304): normalde gizli; DOM'da eski arayüz
+       kalıntısı algılanırsa görünür. Data/scoring davranışı değiştirmez. -->
+  <div id="staleUiBanner" class="stale-banner hide"></div>
   <div id="msg" class="msg"></div>
 
   <section id="view-setup">
@@ -386,10 +399,48 @@
     </div>
   </section>
 </main>
-<div class="disclaimer">Bu uygulama kişisel bir takip aracıdır; yatırım tavsiyesi değildir.</div>
+<div class="disclaimer">Bu uygulama kişisel bir takip aracıdır; yatırım tavsiyesi değildir.
+  <div class="version-note">Sürüm: <span id="appVersion">?</span> · eski görünüyorsa ↻ Yenile ile tam yenileyin</div>
+</div>
 
 <script>
 "use strict";
+/* Görünür sürüm etiketi (PR #304): tek kaynak bu sabittir; footer'daki
+   "Sürüm:" satırını ve <html data-app-version> attribute'unu doldurur.
+   Değer ana repo main commit'inin kısa hash'idir — deploy edilen her webapp
+   PR'ında güncellenir (public deploy commit'i farklı olabilir; kullanıcı
+   teşhisi için önemli olan HANGİ uygulama sürümünün yüklendiğidir). */
+const APP_VERSION="43b2791";
+function applyAppVersion(){
+  document.documentElement.dataset.appVersion=APP_VERSION;
+  const el=document.getElementById("appVersion");
+  if(el) el.textContent=APP_VERSION;
+}
+/* Stale-UI teşhisi (PR #304): aşağıdaki eski placeholder metni #303'ten beri
+   ne kodda ne herhangi bir veri alanında üretilir — DOM'da görünüyorsa
+   tarayıcı ESKİ cache'lenmiş HTML çalıştırıyordur. Marker parçalı tutulur ki
+   bu dosyanın kendisi (yorumlar dahil) taramada yanlış pozitif vermesin. */
+const STALE_UI_MARKER="şirket adı "+"bulunamadı";
+function staleUiRemnantIn(text){
+  return String(text||"").includes(STALE_UI_MARKER);
+}
+function checkStaleUiRemnants(){
+  const banner=document.getElementById("staleUiBanner");
+  if(!banner) return false;
+  const spots=["hisselerTable","watchlistWrap","detailHeadingText"]
+    .map(id=>document.getElementById(id))
+    .filter(Boolean)
+    .map(el=>el.innerHTML||el.textContent||"");
+  const stale=spots.some(staleUiRemnantIn);
+  if(stale){
+    banner.textContent=`Eski arayüz kalıntısı algılandı. Sayfayı tam yenileyin (↻): Sürüm ${APP_VERSION}`;
+    banner.classList.remove("hide");
+  }else{
+    banner.classList.add("hide");
+  }
+  return stale;
+}
+
 const LS = {
   token:"bist_token",
   repo:"bist_repo",
@@ -1875,6 +1926,7 @@ async function renderHisseler(){
       `onclick="event.stopPropagation();watchlistToggle('${r.sym}')">${starred?"★":"☆"}</button></td></tr>`;
   }
   table.innerHTML=html;
+  checkStaleUiRemnants();  // eski cache'lenmiş HTML kalıntısı teşhisi (PR #304)
 }
 
 /* ================= Sektör sekmesi =================
@@ -1957,6 +2009,7 @@ function saveSetup(){
   boot();
 }
 async function boot(){
+  applyAppVersion();  // sürüm etiketi setup ekranında da görünür (PR #304)
   S.token=normalizeToken(S.token);
   S.repo=normalizeRepo(S.repo);
   S.profile=String(S.profile||"").trim();
