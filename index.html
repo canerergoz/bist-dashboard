@@ -73,6 +73,9 @@
   .pos{color:var(--pos);font-weight:600;} .neg{color:var(--neg);font-weight:600;}
   .muted{color:var(--sub);font-size:calc(11px * var(--fs));}
   .cell-sub{display:block;color:var(--sub);font-size:calc(10px * var(--fs));margin-top:2px;white-space:nowrap;}
+  .price-badge{display:block;max-width:100%;margin-top:2px;color:var(--sub);
+    font-size:calc(9px * var(--fs));font-weight:600;line-height:1.15;white-space:normal;
+    overflow-wrap:anywhere;}
   .pill{display:inline-block;background:var(--soft);color:var(--acc);border-radius:10px;
         padding:1px 8px;font-size:calc(10px * var(--fs));font-weight:700;margin-left:6px;vertical-align:middle;}
   .pill.warn{color:var(--warn);background:#fff5dc;}
@@ -380,8 +383,8 @@
       <div class="muted" id="hisselerMeta">yükleniyor…</div>
       <div class="table-wrap"><table id="hisselerTable" class="stocks-table"></table></div>
       <p class="muted" style="margin-top:6px">
-        Fiyatlar son paket verisine göre gösterilir; gün içi gecikmeli fiyat
-        hattı ayrı olarak eklenecektir. Satıra dokununca Detay açılır.
+        Rozet doğrulanmış fiyat zamanını veya tarihli kapanışı gösterir.
+        Satıra dokununca Detay açılır.
       </p>
     </div>
   </section>
@@ -407,21 +410,19 @@
   </section>
 </main>
 <div class="disclaimer">Bu uygulama kişisel bir takip aracıdır; yatırım tavsiyesi değildir.
-  <div class="version-note">Sürüm: <span id="appVersion">?</span> · eski görünüyorsa ↻ Yenile ile tam yenileyin</div>
+  <div class="version-note">Yapı: <span id="appBuildId">?</span> · eski görünüyorsa ↻ Yenile ile tam yenileyin</div>
 </div>
 
 <script>
 "use strict";
-/* Görünür sürüm etiketi (PR #304): tek kaynak bu sabittir; footer'daki
-   "Sürüm:" satırını ve <html data-app-version> attribute'unu doldurur.
-   Değer ana repo main commit'inin kısa hash'idir — deploy edilen her webapp
-   PR'ında güncellenir (public deploy commit'i farklı olabilir; kullanıcı
-   teşhisi için önemli olan HANGİ uygulama sürümünün yüklendiğidir). */
-const APP_VERSION="43b2791";
-function applyAppVersion(){
-  document.documentElement.dataset.appVersion=APP_VERSION;
-  const el=document.getElementById("appVersion");
-  if(el) el.textContent=APP_VERSION;
+/* Görünür build kimliği: commit hash'ine bağlı olmayan, monoton CalVer
+   YYYY.MM.DD.ordinal. Her webapp release adayında ordinal artırılır; bu kimlik
+   tek başına deploy/canlılık iddiası değildir. */
+const APP_BUILD_ID="2026.07.18.1";
+function applyAppBuildId(){
+  document.documentElement.dataset.appBuildId=APP_BUILD_ID;
+  const el=document.getElementById("appBuildId");
+  if(el) el.textContent=APP_BUILD_ID;
 }
 /* Stale-UI teşhisi (PR #304): aşağıdaki eski placeholder metni #303'ten beri
    ne kodda ne herhangi bir veri alanında üretilir — DOM'da görünüyorsa
@@ -440,7 +441,7 @@ function checkStaleUiRemnants(){
     .map(el=>el.innerHTML||el.textContent||"");
   const stale=spots.some(staleUiRemnantIn);
   if(stale){
-    banner.textContent=`Eski arayüz kalıntısı algılandı. Sayfayı tam yenileyin (↻): Sürüm ${APP_VERSION}`;
+    banner.textContent=`Eski arayüz kalıntısı algılandı. Sayfayı tam yenileyin (↻): Yapı ${APP_BUILD_ID}`;
     banner.classList.remove("hide");
   }else{
     banner.classList.add("hide");
@@ -481,8 +482,12 @@ const S = {
   repo: normalizeRepo(localStorage.getItem(LS.repo)),
   profile: String(localStorage.getItem(LS.profile) || "").trim(),
   relatedProfiles: String(localStorage.getItem(LS.related) || "").trim(),
-  prices: {},
   latestPrices: null,
+  latestPricesInFlight: null,
+  latestPricesLastAttemptMs: 0,
+  latestPricesRequestSeq: 0,
+  latestPricesAppliedSeq: 0,
+  bundlePromise: null,
   candidateRows: [],
   rowBySymbol: {},
   positions: [],
@@ -554,10 +559,9 @@ function valueClass(raw){
   if(!s) return "-";
   return VALUE_CLASS_MAP[s.toLocaleLowerCase("tr")] || s;
 }
-/* Fiyat provenance artık kullanıcıya HİÇ gösterilmez (#286 — kullanıcı
-   isteği). Ham `quote.source` yalnız görünmez `data-src` attribute'unda
-   (debug/test) tutulur; hiçbir metin/tooltip/etiket render edilmez.
-   Kalıcı çözüm: tek delayed price snapshot (latest_prices). */
+/* Provider adı kullanıcıya gösterilmez. Ham `quote.source` görünmez `data-src`
+   attribute'unda (debug/test) kalır; kullanıcı yalnız kanıtlanmış fiyat zamanı
+   veya kapanış tarihini görür. */
 /* Non-equity fallback listesi (PR #270): python tarafındaki otoriter
    universe.manager.NON_EQUITY_SYMBOLS kümesinin birebir kopyası — parity
    guard testi ikisini eşit tutar. Paket instrument_types taşımıyorsa bile
@@ -594,9 +598,16 @@ function parseJsonText(text, path){
     throw new Error(`${path} JSON okunamadı: ${err.message}`);
   }
 }
-async function readJson(path){
-  const r = await fetch(githubContentsUrl(path),
-    { headers: apiHeaders({ "Accept": "application/vnd.github.raw+json" }) });
+async function readJson(path, options={}){
+  const cacheBust=Boolean(options.cacheBust);
+  const url=new URL(githubContentsUrl(path));
+  const request={headers:apiHeaders({ "Accept": "application/vnd.github.raw+json" })};
+  if(cacheBust){
+    url.searchParams.set("ref", "main");
+    url.searchParams.set("_cb", String(options.cacheBustKey||Date.now()));
+    request.cache="no-store";
+  }
+  const r = await fetch(url.toString(), request);
   if (r.status === 404) return null;
   if (r.status === 401 || r.status === 403) throw new Error("Token reddedildi (yetki/expiry kontrol et).");
   if (!r.ok) throw new Error("Okuma hatası: HTTP " + r.status);
@@ -629,6 +640,8 @@ function show(view){
   for (const v of ["adaylar","karne","portfoy","detay","sektor","hisseler"]){
     const b=document.getElementById("nav-"+v); if(b) b.classList.toggle("on", v===view);
   }
+  if(view==="adaylar") loadAdaylar();
+  if(view==="portfoy") renderPortfolio();
   if(view==="detay"){
     // Sekme AÇILIŞINDA (kullanıcı yazarken değil) boşsa varsayılan/portföy/aday
     // sembolü doldurulur; renderDetail'in kendisi artık zorla-doldurmaz, böylece
@@ -797,52 +810,25 @@ function attachComputedV3(rows){
   return true;
 }
 
-function quoteUpsert(symbol, price, source, asOf, priority){
-  const extra = arguments.length>5 ? arguments[5] : {};
-  const sym=normSymbol(symbol);
-  const n=num(price);
-  if(!sym || n===null || n<=0) return;
-  const current=S.prices[sym];
-  const incoming={price:n, source, asOf:asOf||"", priority:priority||0};
-  const changePct=num(extra && extra.changePct);
-  const changeAbs=num(extra && extra.changeAbs);
-  if(changePct!==null) incoming.changePct=changePct;
-  if(changeAbs!==null) incoming.changeAbs=changeAbs;
-  if(!current || incoming.priority>current.priority ||
-     (incoming.priority===current.priority && incoming.asOf>current.asOf)){
-    S.prices[sym]=incoming;
-  }
-}
-function quoteFromRow(row, artifact){
-  const sym=normSymbol(row["Hisse"]||row["Kullanılan Güncel Sembol"]);
-  const asOf=String(row["Son Güncelleme Saati"] || artifact.generated_at || artifact.selected_at || "");
-  if(num(row["Fiyat"])!==null) quoteUpsert(sym,row["Fiyat"],"market",asOf,3);
-  else if(num(row["Kapanış"])!==null) quoteUpsert(sym,row["Kapanış"],"scan",asOf,2);
-}
-function mergeTrackingPrices(payload){
-  const records = Array.isArray(payload) ? payload : ((payload && payload.records) || []);
-  for(const rec of records){
-    const snap=rec.feature_snapshot || {};
-    const sym=normSymbol(rec.symbol || snap.symbol || rec["Hisse"]);
-    const asOf=String(rec.selected_at || snap.picked_at || rec.artifact_selected_at || rec.published_at || "");
-    quoteUpsert(sym, snap.close_price, "tracking_close", asOf, 1);
-    quoteUpsert(sym, rec.exit_price, "exit_close", asOf, 1);
-    quoteUpsert(sym, rec.entry_price, "entry_close", asOf, 1);
-  }
-}
-function priceFor(symbol){ return S.prices[normSymbol(symbol)] || null; }
 function delayedQuoteFor(symbol){
-  const quote=priceFor(symbol);
-  return quote && quote.source==="delayed_snapshot" ? quote : null;
-}
-function changePctFor(symbol, fallback){
-  const quote=delayedQuoteFor(symbol);
-  const snap=quote ? num(quote.changePct) : null;
-  return snap!==null ? snap : fallback;
+  const payload=S.latestPrices;
+  if(!validLatestPricesPayload(payload) || !latestPricesSnapshotFresh(payload)) return null;
+  return usableLatestPriceQuote(payload, symbol);
 }
 function parseIsoMs(value){
   const ms=Date.parse(String(value||""));
   return Number.isFinite(ms) ? ms : null;
+}
+function parseAwareIsoMs(value){
+  const text=String(value||"").trim();
+  const match=text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i);
+  if(!match) return null;
+  const parts=match.slice(1,7).map(Number);
+  const calendar=new Date(Date.UTC(parts[0],parts[1]-1,parts[2],parts[3],parts[4],parts[5]));
+  if(calendar.getUTCFullYear()!==parts[0] || calendar.getUTCMonth()!==parts[1]-1 ||
+     calendar.getUTCDate()!==parts[2] || calendar.getUTCHours()!==parts[3] ||
+     calendar.getUTCMinutes()!==parts[4] || calendar.getUTCSeconds()!==parts[5]) return null;
+  return parseIsoMs(text);
 }
 function latestPriceMaxAgeMinutes(payload){
   const n=num(payload && payload.freshness && payload.freshness.max_age_minutes);
@@ -853,8 +839,10 @@ function validLatestPricesPayload(payload){
   if(Number(payload.schema_version)!==1) return false;
   if(payload.data_mode!=="delayed_snapshot") return false;
   if(payload.is_realtime!==false) return false;
-  if(!parseIsoMs(payload.generated_at_utc)) return false;
+  if(parseAwareIsoMs(payload.generated_at_utc)===null) return false;
   if(!payload.freshness || typeof payload.freshness!=="object" || Array.isArray(payload.freshness)) return false;
+  const maxAge=num(payload.freshness.max_age_minutes);
+  if(maxAge===null || maxAge<=0) return false;
   if(!payload.symbols || typeof payload.symbols!=="object" || Array.isArray(payload.symbols)) return false;
   return true;
 }
@@ -869,38 +857,52 @@ function usableLatestPriceQuote(payload, symbol){
   const row=payload && payload.symbols && payload.symbols[sym];
   if(!sym || !row || typeof row!=="object" || Array.isArray(row)) return null;
   if(normSymbol(row.symbol || sym)!==sym) return null;
-  if(row.is_stale===true) return null;
+  if(row.is_stale!==false) return null;
   if(String(row.source_status||"").toLowerCase()!=="ok") return null;
   const price=num(row.last_price);
   if(price===null || price<=0) return null;
+  const priceTimeMs=parseAwareIsoMs(row.price_time_utc);
+  if(priceTimeMs===null) return null;
+  const priceAgeMinutes=(Date.now()-priceTimeMs)/60000;
+  if(priceAgeMinutes<0 || priceAgeMinutes>latestPriceMaxAgeMinutes(payload)) return null;
   return {
     price,
-    asOf:String(row.price_time_utc || row.source_time_local || payload.generated_at_utc || ""),
+    source:"delayed_snapshot",
+    asOf:String(row.price_time_utc),
     changePct:num(row.daily_change_pct),
     changeAbs:num(row.daily_change_abs),
   };
 }
-function applyLatestPrices(payload){
+function applyLatestPrices(payload, options={}){
+  const requestId=num(options.requestId);
+  const appliedId=num(S.latestPricesAppliedSeq)||0;
+  if(requestId!==null && requestId<appliedId) return false;
   if(!validLatestPricesPayload(payload) || !latestPricesSnapshotFresh(payload)){
-    S.latestPrices=null;
+    if(!options.preserveExisting) S.latestPrices=null;
     return false;
   }
+  const incomingMs=parseAwareIsoMs(payload.generated_at_utc);
+  const currentMs=parseAwareIsoMs(S.latestPrices && S.latestPrices.generated_at_utc);
+  if(currentMs!==null && incomingMs!==null && incomingMs<currentMs) return false;
   S.latestPrices=payload;
-  for(const sym of Object.keys(payload.symbols||{})){
-    const quote=usableLatestPriceQuote(payload, sym);
-    if(!quote) continue;
-    quoteUpsert(sym, quote.price, "delayed_snapshot", quote.asOf, 4,
-      {changePct:quote.changePct, changeAbs:quote.changeAbs});
-  }
+  if(requestId!==null) S.latestPricesAppliedSeq=Math.max(appliedId,requestId);
   return true;
 }
-async function loadLatestPrices(){
+async function loadLatestPrices(options={}){
+  const requestId=(num(S.latestPricesRequestSeq)||0)+1;
+  S.latestPricesRequestSeq=requestId;
   try{
-    const payload=await readJson("data/latest_prices.json");
-    if(!payload){ S.latestPrices=null; return false; }
-    return applyLatestPrices(payload);
+    const payload=await readJson("data/latest_prices.json",{
+      cacheBust:Boolean(options.cacheBust),
+      cacheBustKey:`${Date.now()}-${requestId}`,
+    });
+    return applyLatestPrices(payload,{
+      requestId,
+      preserveExisting:Boolean(options.preserveExisting),
+    });
   }catch(e){
-    S.latestPrices=null;
+    const appliedId=num(S.latestPricesAppliedSeq)||0;
+    if(!options.preserveExisting && requestId>=appliedId) S.latestPrices=null;
     if(typeof console!=="undefined" && console.debug) console.debug("latest_prices ignored", e.message);
     return false;
   }
@@ -991,17 +993,19 @@ function makeDefaultDetailSymbol(){
 }
 
 async function loadMarketData(){
+  // Bundle, current-price resolver'ın güvenilir EOD katmanıdır. Candidate
+  // artifact'i ve bundle paralel okunur; bundle yoksa resolver "Veri yok"a
+  // düşer, tarihsel seçim/tracking fiyatına dönmez.
+  ensureBundle().catch(()=>null);
   const art = await readJson("data/latest_core_candidates.json");
   if(!art) throw new Error("data/latest_core_candidates.json bulunamadı.");
   const rows = rowsFromArtifact(art).map(row=>Object.assign({}, row));
   const computed = attachComputedV3(rows);
   S.candidateRows = rows;
   S.rowBySymbol = {};
-  S.prices = {};
   for(const row of rows){
     const sym=normSymbol(row["Hisse"]||row["Kullanılan Güncel Sembol"]);
     if(sym) S.rowBySymbol[sym]=row;
-    quoteFromRow(row, art);
   }
   S.artifactInfo = {
     generated_at: art.generated_at || "",
@@ -1011,9 +1015,7 @@ async function loadMarketData(){
     source: rows.length ? String(rows[0]["Selection Source"]||"") : "",
     computedV3: computed,
   };
-  const tracking = await readJson("data/morning_pick_tracking.json");
-  if(tracking) mergeTrackingPrices(tracking);
-  await loadLatestPrices();
+  await requestLatestPrices({force:true,allowHidden:true,preserveExisting:false});
 }
 function candidateModeLabel(){
   const info=S.artifactInfo || {};
@@ -1044,6 +1046,12 @@ function candidateRowsForDisplay(){
     return (num(a["Legacy Sıra"]) ?? 999999) - (num(b["Legacy Sıra"]) ?? 999999);
   });
 }
+function candidateSelectionPrice(row){
+  const market=num(row && row["Fiyat"]);
+  if(market!==null && market>0) return market;
+  const close=num(row && row["Kapanış"]);
+  return close!==null && close>0 ? close : null;
+}
 function loadAdaylar(){
   const el=document.getElementById("adayTable"), meta=document.getElementById("adayMeta");
   const rows=candidateRowsForDisplay();
@@ -1060,12 +1068,12 @@ function loadAdaylar(){
   let html = `<tr><th>#</th><th>Hisse</th><th>Şirket</th><th class=num>Fiyat</th><th class=num>Gün%</th><th class=num>${esc(basis.label)}</th></tr>`;
   rows.slice(0,15).forEach((r,i)=>{
     const sym=normSymbol(r["Hisse"]);
-    const quote=delayedQuoteFor(sym);
-    const chg=changePctFor(sym, r["Günlük Değişim %"]);
+    const quote=currentQuoteFor(sym);
+    const chg=dailyChangeFor(sym);
     html += `<tr class="clickable" onclick="selectDetail('${sym}')"><td>${i+1}</td><td><b>${esc(sym)}</b></td>
       <td class=muted>${esc(String(r["Şirket Adı"]||"").slice(0,20))}</td>
-      <td class=num>${fmt(quote?quote.price:(r["Fiyat"] ?? r["Kapanış"]))}</td>
-      <td class="num ${signCls(chg)}">${fmt(chg,1)}</td>
+      <td class=num data-src="${quote?esc(quote.source):''}">${quote?fmt(quote.price):"-"}${priceBadgeHtml(quote)}</td>
+      <td class="num ${changeCellCls(chg)}">${fmtChangeCell(chg)}</td>
       <td class=num>${fmt(r[basis.score] ?? r["V3 Skor"] ?? r["V2 Skor"] ?? r["Karar Skoru"],1)}</td></tr>`;
   });
   el.innerHTML = html;
@@ -1145,15 +1153,23 @@ async function loadKarne(){
 
 function pfPath(slug){ return `webapp/portfolios/${slugify(slug||S.profile)}.json`; }
 function portfolioTotals(positions){
-  let total=0, cost=0, priced=0;
+  let total=0, cost=0, priced=0, costed=0;
   for(const p of positions){
-    const quote=quoteOrBundle(p.symbol);
+    const quote=currentQuoteFor(p.symbol);
     const price=quote ? quote.price : null;
     const qty=num(p.quantity), avg=num(p.avg_cost);
-    if(price!==null && qty!==null){ total += price*qty; priced++; }
-    if(avg!==null && qty!==null) cost += avg*qty;
+    const validQty=qty!==null && qty>0;
+    const validPrice=price!==null && price>0;
+    const validCost=avg!==null && avg>0;
+    if(validPrice && validQty){ total += price*qty; priced++; }
+    if(validCost && validQty){ cost += avg*qty; costed++; }
   }
-  return {total,cost,priced,pnl: cost>0 ? ((total/cost-1)*100) : null};
+  const hasPositions=positions.length>0;
+  const allPriced=hasPositions && priced===positions.length;
+  const allCosted=hasPositions && costed===positions.length;
+  return {total:allPriced?total:null,cost:allCosted?cost:null,
+          priced,costed,allPriced,allCosted,
+          pnl:allPriced && allCosted && cost>0 ? ((total/cost-1)*100) : null};
 }
 function renderPortfolioTable(positions, editable){
   if(!positions.length) return `<div class="muted">Henüz pozisyon yok.</div>`;
@@ -1172,15 +1188,18 @@ function renderPortfolioTable(positions, editable){
         <td><button class="btn small gray" onclick="cancelEditPosition()">İptal</button></td></tr>`;
       return;
     }
-    const quote=quoteOrBundle(sym);
+    const quote=currentQuoteFor(sym);
     const price=quote ? quote.price : null;
     const qty=num(p.quantity), avg=num(p.avg_cost);
-    const value=(price!==null && qty!==null)?price*qty:null;
-    const pnl=(price!==null && avg!==null)?((price/avg-1)*100):null;
+    const validQty=qty!==null && qty>0;
+    const validCost=avg!==null && avg>0;
+    const validPrice=price!==null && price>0;
+    const value=(validPrice && validQty)?price*qty:null;
+    const pnl=(validPrice && validQty && validCost)?((price/avg-1)*100):null;
     html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>
-      <td class=num>${fmt(qty,0)}</td>
-      <td class=num>${fmtCost(avg)}</td>
-      <td class=num data-src="${quote?esc(quote.source):''}">${price!==null?fmt(price):"-"}${changeArrow(dailyChangeFor(sym))}</td>
+      <td class=num>${validQty?fmt(qty,0):"-"}</td>
+      <td class=num>${validCost?fmtCost(avg):"-"}</td>
+      <td class=num data-src="${quote?esc(quote.source):''}">${price!==null?fmt(price):"-"}${changeArrow(dailyChangeFor(sym))}${priceBadgeHtml(quote)}</td>
       <td class=num>${value!==null?fmt(value):"-"}</td>
       <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
     if(editable) html+=`<td class=pf-actions><button class="pf-edit" title="Düzenle" onclick="event.stopPropagation();editPosition(${i})">✎</button><button class=del title="Sil" onclick="event.stopPropagation();delPosition(${i})">x</button></td>`;
@@ -1214,8 +1233,11 @@ function renderPortfolioGroup(title, positions, editable){
   const totals=portfolioTotals(positions);
   const pnlText=totals.pnl!==null ? ` | K/Z: <b class="${signCls(totals.pnl)}">%${fmt(totals.pnl,1)}</b>` : "";
   const pricedText=positions.length ? ` | fiyatlı: ${totals.priced}/${positions.length}` : "";
+  const costedText=positions.length ? ` | maliyetli: ${totals.costed}/${positions.length}` : "";
+  const marketText=totals.total!==null ? `${fmt(totals.total)} TL` : "hesaplanamadı";
+  const costText=totals.cost!==null ? `${fmt(totals.cost)} TL` : "hesaplanamadı";
   return `<div class="portfolio-block">
-    <div class="portfolio-head"><h3>${esc(title)}</h3><div class="muted">Piyasa: <b>${fmt(totals.total)} TL</b> | Maliyet: <b>${fmt(totals.cost)} TL</b>${pnlText}${pricedText}</div></div>
+    <div class="portfolio-head"><h3>${esc(title)}</h3><div class="muted">Piyasa: <b>${marketText}</b> | Maliyet: <b>${costText}</b>${pnlText}${pricedText}${costedText}</div></div>
     ${renderPortfolioTable(positions, editable)}
   </div>`;
 }
@@ -1254,8 +1276,10 @@ function updatePriceHint(){
   if(!el) return;
   const sym=normSymbol(document.getElementById("pfSym").value);
   if(!sym){ el.textContent=""; return; }
-  const quote=quoteOrBundle(sym);
-  el.textContent = quote ? `${sym} son fiyat: ${fmt(quote.price)} TL` : `${sym} için repo verisinde fiyat bulunamadı.`;
+  const quote=currentQuoteFor(sym);
+  el.innerHTML = quote
+    ? `${esc(sym)} kullanılan fiyat: ${fmt(quote.price)} TL${priceBadgeHtml(quote)}`
+    : `${esc(sym)} için repo verisinde fiyat bulunamadı.${priceBadgeHtml(null)}`;
 }
 function addPosition(){
   const sym=normSymbol(document.getElementById("pfSym").value);
@@ -1642,7 +1666,7 @@ const MGB = (() => {
     try{
       if(!S.chartBundle){
         status.textContent="grafik verisi yükleniyor…";
-        S.chartBundle=await readJson("data/webapp_chart_bundle.json");
+        await ensureBundle();
       }
     }catch(e){ status.textContent="Grafik verisi okunamadı: "+e.message; return; }
     if(!S.chartBundle){
@@ -1672,7 +1696,7 @@ function selectDetail(symbol){
   S.detailAutoFilled=false;
   show("detay");
 }
-function renderDetail(){
+function renderDetail(options={}){
   const out=document.getElementById("detailOut");
   if(!out) return;
   // NOT: ensureDetailSymbol burada ÇAĞRILMAZ — auto-fill yalnız sekme açılışında
@@ -1686,27 +1710,32 @@ function renderDetail(){
     // BIST evreninden herhangi bir sembol: metrik kartlar yalnız günün aday
     // artifact'inde olanlar için mevcut; grafik + bilanço yine de çizilir.
     let basic=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, null))} · bugünkü aday listesinde değil — temel kartlar aday artifact'inden gelir</span></div>`;
+    const quote=currentQuoteFor(sym);
+    const chg=dailyChangeFor(sym);
     const bundleBars=S.chartBundle && (S.chartBundle.bars||{})[sym];
+    let changeSub="";
     if(bundleBars && bundleBars.c.length>1){
-      const n=bundleBars.c.length, last=bundleBars.c[n-1], prev=bundleBars.c[n-2];
-      const p20=bundleBars.c[Math.max(0,n-21)];
-      basic+=`<div class="metric-grid">
-        <div class="metric"><div class="label">Son kapanış</div><div class="value">${fmt(last)}</div><div class="muted">${esc(fmtDate(bundleBars.t[n-1]))}</div></div>
-        <div class="metric"><div class="label">Günlük</div><div class="value ${signCls((last/prev-1)*100)}">%${fmt((last/prev-1)*100,1)}</div><div class="muted">20g %${fmt((last/p20-1)*100,1)}</div></div>
-      </div>`;
+      const n=bundleBars.c.length, p20=bundleBars.c[Math.max(0,n-21)];
+      if(p20) changeSub=`20g %${fmt((bundleBars.c[n-1]/p20-1)*100,1)}`;
     }
+    basic+=`<div class="metric-grid">
+      <div class="metric" data-src="${quote?esc(quote.source):''}"><div class="label">Fiyat</div><div class="value">${quote?fmt(quote.price):"-"}</div>${priceBadgeHtml(quote)}</div>
+      <div class="metric"><div class="label">Günlük %</div><div class="value ${changeCellCls(chg)}">${fmtChangeCell(chg)}</div><div class="muted">${esc(changeSub)}</div></div>
+    </div>`;
     out.innerHTML=basic;
-    MGB.render(sym);
+    if(options.renderChart!==false) MGB.render(sym);
     renderFin(sym);
     return;
   }
-  const quote=priceFor(sym);
-  const chg=changePctFor(sym, row["Günlük Değişim %"]);
+  const quote=currentQuoteFor(sym);
+  const chg=dailyChangeFor(sym);
+  const selectionPrice=candidateSelectionPrice(row);
   let html=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, row))}</span>
     <span class="pill">${esc(candidateModeLabel())}</span></div>`;
   html += `<div class="metric-grid">
-    <div class="metric" data-src="${quote?esc(quote.source):'artifact'}"><div class="label">Fiyat</div><div class="value">${fmt(quote?quote.price:(row["Fiyat"] ?? row["Kapanış"]))}</div></div>
-    <div class="metric"><div class="label">Günlük</div><div class="value ${signCls(chg)}">%${fmt(chg,1)}</div><div class="muted">hafta %${fmt(row["Haftalık Değişim %"],1)}</div></div>
+    <div class="metric" data-src="${quote?esc(quote.source):''}"><div class="label">Fiyat</div><div class="value">${quote?fmt(quote.price):"-"}</div>${priceBadgeHtml(quote)}</div>
+    <div class="metric"><div class="label">Günlük %</div><div class="value ${changeCellCls(chg)}">${fmtChangeCell(chg)}</div><div class="muted">hafta %${fmt(row["Haftalık Değişim %"],1)}</div></div>
+    <div class="metric"><div class="label">Seçim fiyatı</div><div class="value">${selectionPrice!==null?fmt(selectionPrice):"-"}</div><div class="muted">tarihsel referans</div></div>
     <div class="metric"><div class="label">V3 Sıra</div><div class="value">${fmtInt(row["V3 Sıra"])}</div><div class="muted">V2 sıra ${fmtInt(row["V2 Sıra"])}</div></div>
     <div class="metric"><div class="label">V3 Skor</div><div class="value">${fmt(row["V3 Skor"],1)}</div><div class="muted">karar ${fmt(row["Karar Skoru"],0)}</div></div>
   </div>`;
@@ -1731,7 +1760,7 @@ function renderDetail(){
   const note=detailField(row,"Kısa Vade Notu","");
   if(note) html += `<div class="detail-note">${esc(note)}</div>`;
   out.innerHTML=html;
-  MGB.render(sym);
+  if(options.renderChart!==false) MGB.render(sym);
   renderFin(sym);
 }
 
@@ -1772,34 +1801,81 @@ function renderFin(sym){
   out.innerHTML=html;
 }
 
-/* ================= Hisseler sekmesi =================
-   Tam evren listesi (paket verisi). Fiyatlar canlı değil: paket = önceki
-   işlem gününün kapanışı; adaylar için sabah artifact fiyatı önceliklidir. */
+/* ================= Canonical current-price + Hisseler =================
+   Güncel fiyat tek sözleşmedir: doğrulanmış gecikmeli satır -> tarihli EOD
+   kapanışı -> fiyat yok. Aday/tracking/entry/exit/maliyet tarihsel referanstır
+   ve bu resolver'a hiçbir zaman girmez. */
 async function ensureBundle(){
-  if(!S.chartBundle) S.chartBundle=await readJson("data/webapp_chart_bundle.json");
-  return S.chartBundle;
+  if(S.chartBundle) return S.chartBundle;
+  if(!S.bundlePromise){
+    S.bundlePromise=readJson("data/webapp_chart_bundle.json").then(payload=>{
+      S.chartBundle=payload;
+      if(!payload) S.bundlePromise=null;
+      return payload;
+    }).catch(error=>{
+      S.bundlePromise=null;
+      throw error;
+    });
+  }
+  return S.bundlePromise;
 }
 function bundleQuote(symbol){
   const sym=normSymbol(symbol);
   const bars=S.chartBundle && (S.chartBundle.bars||{})[sym];
-  if(!bars || !bars.c || !bars.c.length) return null;
+  if(!bars || !Array.isArray(bars.t) || !Array.isArray(bars.c) ||
+     !bars.c.length || bars.t.length!==bars.c.length) return null;
   const n=bars.c.length;
-  return {price:bars.c[n-1], source:"bundle_close", asOf:String(bars.t[n-1]||""),
-          prev:n>1?bars.c[n-2]:null};
+  const price=num(bars.c[n-1]);
+  const asOf=String(bars.t[n-1]||"").trim();
+  if(price===null || price<=0 || !/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return null;
+  const dateMs=Date.parse(`${asOf}T00:00:00Z`);
+  if(!Number.isFinite(dateMs) || new Date(dateMs).toISOString().slice(0,10)!==asOf ||
+     asOf>istanbulDateKey()) return null;
+  const prev=n>1?num(bars.c[n-2]):null;
+  return {price, source:"bundle_close", asOf, prev:prev!==null&&prev>0?prev:null};
 }
-function quoteOrBundle(symbol){ return priceFor(symbol) || bundleQuote(symbol); }
+function currentQuoteFor(symbol){
+  return delayedQuoteFor(symbol) || bundleQuote(symbol) || null;
+}
+function istanbulDateKey(ms){
+  const parts=new Intl.DateTimeFormat("en-GB",{
+    timeZone:"Europe/Istanbul",year:"numeric",month:"2-digit",day:"2-digit",
+  }).formatToParts(new Date(ms===undefined?Date.now():ms));
+  const get=type=>(parts.find(part=>part.type===type)||{}).value||"";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+function priceBadgeText(quote){
+  if(quote && quote.source==="delayed_snapshot"){
+    const ms=parseAwareIsoMs(quote.asOf);
+    if(ms!==null){
+      const parts=new Intl.DateTimeFormat("tr-TR",{
+        timeZone:"Europe/Istanbul",hour:"2-digit",minute:"2-digit",hour12:false,
+      }).formatToParts(new Date(ms));
+      const get=type=>(parts.find(part=>part.type===type)||{}).value||"";
+      if(get("hour") && get("minute")) return `Fiyat zamanı · ${get("hour")}:${get("minute")}`;
+    }
+  }
+  if(quote && quote.source==="bundle_close"){
+    const m=String(quote.asOf||"").match(/^\d{4}-(\d{2})-(\d{2})$/);
+    const months=["Oca","Şub","Mar","Nis","May","Haz","Tem","Ağu","Eyl","Eki","Kas","Ara"];
+    if(m && months[Number(m[1])-1]) return `Kapanış · ${m[2]} ${months[Number(m[1])-1]}`;
+  }
+  return "Veri yok";
+}
+function priceBadgeHtml(quote){
+  const text=priceBadgeText(quote);
+  return `<span class="price-badge" title="${esc(text)}" aria-label="${esc(text)}">${esc(text)}</span>`;
+}
 /* Tek noktadan günlük değişim: varsa gecikmeli snapshot yüzdesi, yoksa
    paketin son iki kapanışından hesap (Hisseler + Takip Listesi + Portföy
    aynı değeri görsün). Anomaly kararı fmtChangeCell/changeCellCls'de. */
 function dailyChangeFor(symbol){
-  const sym=normSymbol(symbol);
-  const quote=quoteOrBundle(sym);
+  const quote=currentQuoteFor(symbol);
+  if(!quote) return null;
   const snap=quote ? num(quote.changePct) : null;
   if(snap!==null) return snap;
-  const bars=S.chartBundle && (S.chartBundle.bars||{})[sym];
-  if(!bars || !bars.c || bars.c.length<2) return null;
-  const n=bars.c.length;
-  return bars.c[n-2] ? ((bars.c[n-1]/bars.c[n-2]-1)*100) : null;
+  return quote.source==="bundle_close" && quote.prev
+    ? ((quote.price/quote.prev-1)*100) : null;
 }
 
 /* ===== Takip Listesi (localStorage, kullanıcıya özel, en fazla 10) =====
@@ -1853,12 +1929,12 @@ function renderWatchlist(){
   }
   let html='<div class="table-wrap"><table class="stocks-table"><tr><th class="col-sym">Hisse</th><th>Şirket Adı</th><th class="col-price num">Fiyat</th><th class="col-chg num">Günlük</th><th class="col-star"></th></tr>';
   for(const sym of list){
-    const quote=quoteOrBundle(sym);
+    const quote=currentQuoteFor(sym);
     const chg=dailyChangeFor(sym);
     const company=companyNameFor(sym, S.rowBySymbol[sym]||{});
     html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>`+
       `<td class="name-cell" title="${esc(company)}">${esc(company)||"—"}</td>`+
-      `<td class=num>${quote?fmt(quote.price):"-"}</td>`+
+      `<td class=num data-src="${quote?esc(quote.source):''}">${quote?fmt(quote.price):"-"}${priceBadgeHtml(quote)}</td>`+
       `<td class="num ${changeCellCls(chg)}">${fmtChangeCell(chg)}</td>`+
       `<td><button class="del" title="Listeden çıkar" onclick="event.stopPropagation();watchlistRemove('${sym}')">x</button></td></tr>`;
   }
@@ -1910,10 +1986,9 @@ async function renderHisseler(){
     const company=companyNameFor(sym, candidate);
     if(q && !sym.includes(q) && !sector.toUpperCase().includes(q) &&
        !company.toUpperCase().includes(q)) continue;
-    const quote=quoteOrBundle(sym);
-    if(!quote) continue;
+    const quote=currentQuoteFor(sym);
     const chg=dailyChangeFor(sym);
-    rows.push({sym, sector, price:quote.price, source:quote.source, chg, company});
+    rows.push({sym, sector, price:quote?quote.price:null, source:quote?quote.source:"", quote, chg, company});
   }
   rows.sort(compareHisseler);
   const lastDay=(()=>{const any=Object.values(bars)[0];return any?fmtDate(any.t[any.t.length-1]):"?";})();
@@ -1927,7 +2002,7 @@ async function renderHisseler(){
     const starred=watchlistHas(r.sym);
     html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td data-src="${esc(r.source)}"><b>${esc(r.sym)}</b></td>`+
       `<td class="name-cell" title="${esc(r.company)}">${esc(r.company)||"—"}</td>`+
-      `<td class=num>${fmt(r.price)}</td>`+
+      `<td class=num>${r.price!==null?fmt(r.price):"-"}${priceBadgeHtml(r.quote)}</td>`+
       `<td class="num ${changeCellCls(r.chg)}">${fmtChangeCell(r.chg)}</td>`+
       `<td><button class="wl-star${starred?" on":""}" title="${starred?"Takip listesinden çıkar":"Takip listesine ekle"}" `+
       `onclick="event.stopPropagation();watchlistToggle('${r.sym}')">${starred?"★":"☆"}</button></td></tr>`;
@@ -1958,7 +2033,7 @@ async function renderSector(){
   const sym=normSymbol(document.getElementById("sectorSym").value);
   if(!sym){ meta.textContent="Sembol girilince hissenin sektör tablosu açılır."; table.innerHTML=""; return; }
   try{
-    if(!S.chartBundle){ meta.textContent="veri yükleniyor…"; S.chartBundle=await readJson("data/webapp_chart_bundle.json"); }
+    if(!S.chartBundle){ meta.textContent="veri yükleniyor…"; await ensureBundle(); }
   }catch(e){ meta.textContent="Veri okunamadı: "+e.message; return; }
   const fin=(S.chartBundle && S.chartBundle.fin)||{};
   const me=fin[sym];
@@ -2003,6 +2078,45 @@ async function renderSector(){
   table.innerHTML=html;
 }
 
+const PRICE_VIEW_REFRESH_MS=60000;
+const PRICE_DATA_REFRESH_MS=300000;
+function refreshVisiblePriceSurface(){
+  if(!S.token || !S.profile || document.hidden) return;
+  const visible=id=>{
+    const el=document.getElementById("view-"+id);
+    return el && !el.classList.contains("hide");
+  };
+  if(visible("adaylar")) loadAdaylar();
+  else if(visible("portfoy")) renderPortfolio();
+  else if(visible("detay")) renderDetail({renderChart:false});
+  // Dakikalık TTL çizimi bundle ağına çıkmaz. Bundle ilk yükleme/kullanıcı
+  // navigasyonunda alınır; latest_prices periyodik isteğinden bağımsızdır.
+  else if(visible("hisseler") && S.chartBundle) renderHisseler();
+}
+function requestLatestPrices(options={}){
+  if(S.latestPricesInFlight) return S.latestPricesInFlight;
+  if(!S.token || !S.repo || !S.profile) return Promise.resolve(false);
+  if(document.hidden && !options.allowHidden) return Promise.resolve(false);
+  const now=Date.now();
+  const last=num(S.latestPricesLastAttemptMs)||0;
+  if(!options.force && last>0 && now-last<PRICE_DATA_REFRESH_MS) return Promise.resolve(false);
+  S.latestPricesLastAttemptMs=now;
+  const request=loadLatestPrices({cacheBust:true,preserveExisting:options.preserveExisting!==false})
+    .then(applied=>{
+      refreshVisiblePriceSurface();
+      return applied;
+    }).finally(()=>{
+      if(S.latestPricesInFlight===request) S.latestPricesInFlight=null;
+    });
+  S.latestPricesInFlight=request;
+  return request;
+}
+function wakePriceRefresh(){
+  if(document.hidden) return Promise.resolve(false);
+  refreshVisiblePriceSurface();
+  return requestLatestPrices({preserveExisting:true});
+}
+
 function saveSetup(){
   const t=normalizeToken(document.getElementById("inToken").value);
   const r=normalizeRepo(document.getElementById("inRepo").value);
@@ -2016,7 +2130,7 @@ function saveSetup(){
   boot();
 }
 async function boot(){
-  applyAppVersion();  // sürüm etiketi setup ekranında da görünür (PR #304)
+  applyAppBuildId();  // build kimliği setup ekranında da görünür
   S.token=normalizeToken(S.token);
   S.repo=normalizeRepo(S.repo);
   S.profile=String(S.profile||"").trim();
@@ -2047,16 +2161,21 @@ async function boot(){
   }catch(e){
     msg(e.message,"err");
   }
-  // Paket arka planda yüklenir ki portföy fiyatları (aday-dışı semboller
-  // dahil) Detay'a girmeden dolsun; hata sessiz geçilir (paket beslemesi
-  // opsiyonel katman).
+  // Bundle yeniden erişilebilir hale gelirse bütün current-price yüzeyleri
+  // aynı canonical kaynaktan tekrar çizilir; hata sessizce "Veri yok" kalır.
   ensureBundle().then(()=>{
-    const changed=S.detailAutoFilled ? ensureDetailSymbol(true) : ensureDetailSymbol();
-    if(changed) renderDetail();
+    S.detailAutoFilled ? ensureDetailSymbol(true) : ensureDetailSymbol();
+    loadAdaylar();
+    renderDetail();
     renderPortfolio();
+    renderHisseler();
   }).catch(()=>{});
 }
 applyFontSizePreference();  // kaydedilmiş yazı boyutunu ilk çizimden önce uygula
+window.addEventListener("focus", wakePriceRefresh);
+document.addEventListener("visibilitychange", wakePriceRefresh);
+setInterval(refreshVisiblePriceSurface, PRICE_VIEW_REFRESH_MS);
+setInterval(requestLatestPrices, PRICE_DATA_REFRESH_MS);
 boot();
 </script>
 </body>
