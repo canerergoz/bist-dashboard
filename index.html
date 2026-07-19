@@ -418,7 +418,7 @@
 /* Görünür build kimliği: commit hash'ine bağlı olmayan, monoton CalVer
    YYYY.MM.DD.ordinal. Her webapp release adayında ordinal artırılır; bu kimlik
    tek başına deploy/canlılık iddiası değildir. */
-const APP_BUILD_ID="2026.07.18.1";
+const APP_BUILD_ID="2026.07.19.1";
 function applyAppBuildId(){
   document.documentElement.dataset.appBuildId=APP_BUILD_ID;
   const el=document.getElementById("appBuildId");
@@ -1707,9 +1707,17 @@ function renderDetail(options={}){
   const row=S.rowBySymbol[sym];
   updateDetailHeading(sym, row);
   if(!row){
-    // BIST evreninden herhangi bir sembol: metrik kartlar yalnız günün aday
-    // artifact'inde olanlar için mevcut; grafik + bilanço yine de çizilir.
-    let basic=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, null))} · bugünkü aday listesinde değil — temel kartlar aday artifact'inden gelir</span></div>`;
+    // Aday-dışı sembol (BIST evreninden herhangi biri): karar/skor kartları
+    // günün aday artifact'ine bağlıdır ve burada üretilmez. Finansal özet
+    // kartları şirket veri paketinden (bundle.fin) gelir; paket verisi yoksa
+    // yalnız aday-dışı notu kalır ve Son Bilanço kendi missing-state'ini
+    // gösterir (iki durum birbirine karıştırılmaz).
+    const finCards=finSummaryCardsHtml(sym);
+    const note=finCards
+      ? "Bu şirket güncel aday listesinde değil. Finansal bilgiler şirket veri paketinden gösterilmektedir."
+      : "Bu şirket güncel aday listesinde değil.";
+    let basic=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, null))}</span></div>
+      <div class="muted" style="margin:4px 0">${note}</div>`;
     const quote=currentQuoteFor(sym);
     const chg=dailyChangeFor(sym);
     const bundleBars=S.chartBundle && (S.chartBundle.bars||{})[sym];
@@ -1720,8 +1728,11 @@ function renderDetail(options={}){
     }
     basic+=`<div class="metric-grid">
       <div class="metric" data-src="${quote?esc(quote.source):''}"><div class="label">Fiyat</div><div class="value">${quote?fmt(quote.price):"-"}</div>${priceBadgeHtml(quote)}</div>
-      <div class="metric"><div class="label">Günlük %</div><div class="value ${changeCellCls(chg)}">${fmtChangeCell(chg)}</div><div class="muted">${esc(changeSub)}</div></div>
+      <div class="metric"><div class="label">Günlük %</div><div class="value ${changeCellCls(chg)}">${fmtChangeCell(chg)}</div><div class="muted">${esc(changeSub)}</div></div>${finCards}
     </div>`;
+    const finRow=S.chartBundle && (S.chartBundle.fin||{})[sym];
+    const sectorLabel=finRow && (finRow.curated_subsector || finRow.sector);
+    if(sectorLabel) basic+=`<div class="detail-grid">${renderDetailRow("Sektör", sectorLabel)}</div>`;
     out.innerHTML=basic;
     if(options.renderChart!==false) MGB.render(sym);
     renderFin(sym);
@@ -1772,6 +1783,20 @@ function fmtTL(x){
   if(abs>=1e6) return (n/1e6).toLocaleString("tr-TR",{maximumFractionDigits:1})+" mn";
   if(abs>=1e3) return (n/1e3).toLocaleString("tr-TR",{maximumFractionDigits:0})+" bin";
   return fmt(n,0);
+}
+/* Aday-dışı Detay üstü için bundle.fin finansal özet kartları: yalnız
+   pakette gerçekten bulunan değerler; eksik alan "-" kalır (0 üretilmez;
+   negatif TTM kârda F/K zaten pakete hiç girmez). Karar/skor kartları günün
+   aday artifact'ine bağlıdır ve bu yardımcıdan ASLA üretilmez. */
+function finSummaryCardsHtml(sym){
+  const fin=S.chartBundle && (S.chartBundle.fin||{})[normSymbol(sym)];
+  // renderFin ile AYNI eşik: metadata-only girdi kart üretmez.
+  if(!fin || (!fin.period_label && num(fin.revenue)===null && num(fin.equity_spot)===null)) return "";
+  const pct=(v)=>{const n=num(v); return n===null?"-":"%"+fmt(n*100,1);};
+  return `
+      <div class="metric"><div class="label">F/K / PD-DD</div><div class="value">${fmt(fin.pe,1)} / ${fmt(fin.pb,2)}</div><div class="muted">${esc(fin.period_label||"")}</div></div>
+      <div class="metric"><div class="label">Piyasa değeri</div><div class="value">${fmtTL(fin.market_cap)}</div><div class="muted">TL</div></div>
+      <div class="metric"><div class="label">Net marj / ROE</div><div class="value">${pct(fin.net_margin)} / ${pct(fin.roe)}</div><div class="muted">son bilanço</div></div>`;
 }
 function renderFin(sym){
   const out=document.getElementById("finOut");
