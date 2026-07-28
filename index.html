@@ -76,6 +76,11 @@
   .price-badge{display:block;max-width:100%;margin-top:2px;color:var(--sub);
     font-size:calc(9px * var(--fs));font-weight:600;line-height:1.15;white-space:normal;
     overflow-wrap:anywhere;}
+  /* Unverified intraday: the WORDS carry the warning. Colour and the glyph are
+     supplementary only, so the meaning survives monochrome/colour-blind
+     rendering. white-space:normal + overflow-wrap keep the full sentence
+     readable on a phone instead of truncating it. */
+  .price-badge.unverified{color:var(--warn);font-weight:700;}
   .pill{display:inline-block;background:var(--soft);color:var(--acc);border-radius:10px;
         padding:1px 8px;font-size:calc(10px * var(--fs));font-weight:700;margin-left:6px;vertical-align:middle;}
   .pill.warn{color:var(--warn);background:#fff5dc;}
@@ -418,7 +423,7 @@
 /* Görünür build kimliği: commit hash'ine bağlı olmayan, monoton CalVer
    YYYY.MM.DD.ordinal. Her webapp release adayında ordinal artırılır; bu kimlik
    tek başına deploy/canlılık iddiası değildir. */
-const APP_BUILD_ID="2026.07.19.1";
+const APP_BUILD_ID="2026.07.27.1";
 function applyAppBuildId(){
   document.documentElement.dataset.appBuildId=APP_BUILD_ID;
   const el=document.getElementById("appBuildId");
@@ -483,6 +488,8 @@ const S = {
   profile: String(localStorage.getItem(LS.profile) || "").trim(),
   relatedProfiles: String(localStorage.getItem(LS.related) || "").trim(),
   latestPrices: null,
+  marketCalendar: null,
+  marketCalendarInFlight: null,
   latestPricesInFlight: null,
   latestPricesLastAttemptMs: 0,
   latestPricesRequestSeq: 0,
@@ -815,6 +822,9 @@ function delayedQuoteFor(symbol){
   if(!validLatestPricesPayload(payload) || !latestPricesSnapshotFresh(payload)) return null;
   return usableLatestPriceQuote(payload, symbol);
 }
+/* Low-level helper ONLY: Date.parse accepts naive text and would read it in
+   the browser's local zone. Never call it directly on acceptance paths — use
+   parseAwareIsoMs, which requires an explicit UTC offset first. */
 function parseIsoMs(value){
   const ms=Date.parse(String(value||""));
   return Number.isFinite(ms) ? ms : null;
@@ -847,24 +857,394 @@ function validLatestPricesPayload(payload){
   return true;
 }
 function latestPricesSnapshotFresh(payload){
-  const generated=parseIsoMs(payload && payload.generated_at_utc);
-  if(!generated) return false;
+  /* Aware-only: a naive generated_at_utc is not anchored to an instant and
+     must not be silently read as local time. This is about awareness, not
+     about what the provider's clock means (Acceptance Domain Design, PR #341). */
+  const generated=parseAwareIsoMs(payload && payload.generated_at_utc);
+  if(generated===null) return false;
   const ageMinutes=(Date.now()-generated)/60000;
   return ageMinutes>=0 && ageMinutes<=latestPriceMaxAgeMinutes(payload);
 }
+/* ===== Acceptance Domain — claim-specific evaluation (PR #341 design) =====
+   JavaScript twin of src/prices/acceptance.py. There is NO global acceptance
+   verdict: each function answers one claim and returns one reason code.
+
+   EXACT INPUT DOMAIN: neither side may lean on native coercion, because the
+   two languages disagree — Number("0x10") is 16 while Python's float() raises;
+   float("1_000") is 1000 while Number("1_000") is NaN; Python's \d matches
+   arabic-indic digits and int() converts them while this side rejects them;
+   Date.parse rejects "+03:60" while fromisoformat normalises it to +04:00;
+   U+0085 is whitespace only in Python and U+FEFF only here.
+
+   So a number must be a real number OR decimal text matching one strict ASCII
+   grammar — plain, TR/EN separated and percent-suffixed text keep working
+   exactly as this shell always read them, e.g. "12,3", "1.234,56", "312.75%".
+   A string must be a real string. A timestamp must match one strict ASCII
+   grammar with a range-checked offset. Arrays, objects, exotic numeric
+   literals (hex/binary/underscore/non-ASCII digits), oversized values and
+   runtime-specific whitespace are rejected fail-closed. Parity is pinned by
+   tests/fixtures/acceptance/corpus.json. */
+const ACCEPTANCE_REASON={
+  OK:"OK", ROW_MISSING:"ROW_MISSING", SYMBOL_INVALID:"SYMBOL_INVALID",
+  SYMBOL_MISMATCH:"SYMBOL_MISMATCH", STALE_FLAG:"STALE_FLAG",
+  SOURCE_STATUS_INVALID:"SOURCE_STATUS_INVALID", SOURCE_STATUS_NOT_OK:"SOURCE_STATUS_NOT_OK",
+  PRICE_INVALID:"PRICE_INVALID", QUOTE_TIME_MISSING:"QUOTE_TIME_MISSING",
+  QUOTE_TIME_INVALID:"QUOTE_TIME_INVALID", QUOTE_TIME_NOT_AWARE:"QUOTE_TIME_NOT_AWARE",
+  QUOTE_TIME_FUTURE:"QUOTE_TIME_FUTURE", QUOTE_TIME_EXPIRED:"QUOTE_TIME_EXPIRED",
+  PAYLOAD_INVALID:"PAYLOAD_INVALID",
+  PAYLOAD_SCHEMA_VERSION_INVALID:"PAYLOAD_SCHEMA_VERSION_INVALID",
+  PAYLOAD_DATA_MODE_INVALID:"PAYLOAD_DATA_MODE_INVALID",
+  PAYLOAD_IS_REALTIME_INVALID:"PAYLOAD_IS_REALTIME_INVALID",
+  PAYLOAD_SYMBOLS_INVALID:"PAYLOAD_SYMBOLS_INVALID",
+  PAYLOAD_TIME_MISSING:"PAYLOAD_TIME_MISSING", PAYLOAD_TIME_INVALID:"PAYLOAD_TIME_INVALID",
+  PAYLOAD_TIME_NOT_AWARE:"PAYLOAD_TIME_NOT_AWARE",
+  PAYLOAD_MAX_AGE_INVALID:"PAYLOAD_MAX_AGE_INVALID",
+  PAYLOAD_EXPIRED:"PAYLOAD_EXPIRED", PAYLOAD_FUTURE:"PAYLOAD_FUTURE",
+  CURRENCY_INVALID:"CURRENCY_INVALID",
+  /* The evaluation clock is a closed-type input. Python raises
+     NaiveEvaluationClockError because its caller can be typed; this side has
+     no such guarantee at the call site, so it returns a code instead. Both
+     are fail-closed and the code is in the shared vocabulary. */
+  EVALUATION_CLOCK_INVALID:"EVALUATION_CLOCK_INVALID",
+};
+const ACCEPTANCE_EXPECTED_SCHEMA_VERSION=1;
+const ACCEPTANCE_EXPECTED_DATA_MODE="delayed_snapshot";
+const ACCEPTANCE_MIN_YEAR=1900, ACCEPTANCE_MAX_YEAR=2999;
+/* Digit classes are [0-9], never \d, and identical to the Python grammar:
+   Python's \d also matches non-ASCII digits and int() converts them, so
+   "٢٠٢٦-٠٧-٢٥T١١:٥٠:٠٠Z" parsed as a real instant there while this side
+   rejected it. Spelling both sides out removes the asymmetry. */
+const ACCEPTANCE_STRICT_INSTANT=/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,3}))?(?:Z|([+-])([0-9]{2}):([0-9]{2}))$/;
+/* The same shape WITHOUT a zone: structurally valid but not anchored, so it
+   earns *_NOT_AWARE rather than *_INVALID. */
+const ACCEPTANCE_STRICT_NAIVE_INSTANT=/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,3}))?$/;
+const ACCEPTANCE_INSTANT_AWARE="AWARE", ACCEPTANCE_INSTANT_NAIVE="NAIVE",
+      ACCEPTANCE_INSTANT_MALFORMED="MALFORMED";
+const ACCEPTANCE_SYMBOL=/^[A-Z0-9]{1,12}$/;
+const ACCEPTANCE_FUTURE_TOLERANCE_MS=0;
+/* Exact number: a real finite JS number. Booleans and strings are excluded
+   here; decimal TEXT is handled by parseNumericField, which applies the shared
+   strict grammar rather than Number() coercion. */
+function isExactNumber(value){
+  return typeof value==="number" && Number.isFinite(value);
+}
+function exactNumber(value){ return isExactNumber(value) ? value : null; }
+/* Closed type contract for the evaluation clock: a finite, integral primitive
+   number. Numeric strings, arrays, objects, booleans, null, NaN and the
+   infinities are rejected - none of them may reach an age comparison. */
+const ACCEPTANCE_MAX_CLOCK_MS=8640000000000000;   /* JS Date range limit */
+function acceptanceClockOk(value){
+  return isExactNumber(value) && Number.isInteger(value) &&
+         Math.abs(value)<=ACCEPTANCE_MAX_CLOCK_MS;
+}
+/* Strict decimal grammar applied AFTER this shell's separator normalisation.
+   Keeps the live behaviour (plain and TR/EN decimal text accepted) while
+   eliminating every form the two languages disagree on: hex ("0x10" is 16 in
+   JS but an error in Python), binary ("0b10"), underscores ("1_000" is 1000 in
+   Python, NaN here) and non-ASCII digits ("١٢٣" parses in Python, not here).
+   [0-9] is used deliberately instead of \d for the same reason. */
+const ACCEPTANCE_STRICT_DECIMAL=/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
+/* Shared whitespace contract. Neither trim()/\s here nor str.strip()/\s in
+   Python may be trusted: this runtime treats U+FEFF as whitespace and U+0085 as
+   an ordinary character, Python does the exact opposite. So "\ufeff312.75"
+   parsed here and failed there, and "1\u00852" did the reverse. This CLOSED set
+   is what both agree on, spelled out rather than delegated to either runtime:
+   TAB, LF, VT, FF, CR, SPACE, NBSP, OGHAM SPACE, U+2000..U+200A (FIGURE SPACE
+   included), LINE/PARAGRAPH SEP, NARROW NBSP, MEDIUM MATH SPACE, IDEOGRAPHIC
+   SPACE. Anything else - U+0085 and U+FEFF included - is an unexpected
+   character and the value is rejected fail-closed in BOTH languages. */
+const ACCEPTANCE_SHARED_WS=/[\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/g;
+function parseNumericField(value){
+  if(isExactNumber(value)) return value;
+  if(!isExactString(value)) return null;
+  let text=value.replace(ACCEPTANCE_SHARED_WS,"");
+  if(!text || text==="-" || text==="\u2014") return null;
+  text=text.replace(/%/g,"");
+  if(!text || text==="-" || text==="\u2014") return null;
+  if(text.includes(",") && text.includes(".")){
+    text = text.lastIndexOf(",") > text.lastIndexOf(".")
+      ? text.replace(/\./g,"").replace(/,/g,".")
+      : text.replace(/,/g,"");
+  }else if(text.includes(",")){
+    text=text.replace(/,/g,".");
+  }
+  if(!ACCEPTANCE_STRICT_DECIMAL.test(text)) return null;
+  const n=Number(text);
+  return Number.isFinite(n) ? n : null;
+}
+/* Exact string: a real primitive string; arrays/objects excluded. */
+function isExactString(value){ return typeof value==="string"; }
+/* Strict instant -> integer milliseconds, or null. Mirrors the Python grammar
+   exactly, including the explicit offset range check. */
+/* Range and real-calendar check shared by both instant grammars. */
+function acceptanceCalendarFieldsOk(m){
+  const year=Number(m[1]), month=Number(m[2]), day=Number(m[3]);
+  const hour=Number(m[4]), minute=Number(m[5]), second=Number(m[6]);
+  if(year<ACCEPTANCE_MIN_YEAR || year>ACCEPTANCE_MAX_YEAR) return false;
+  if(month<1 || month>12 || day<1 || day>31) return false;
+  if(hour>23 || minute>59 || second>59) return false;
+  const probe=new Date(Date.UTC(year, month-1, day));
+  return probe.getUTCFullYear()===year && probe.getUTCMonth()===month-1 &&
+         probe.getUTCDate()===day;             /* impossible calendar date */
+}
+/* Structural classification: AWARE, NAIVE or MALFORMED. Keeps "not anchored to
+   an instant" separate from "not a timestamp at all", and uses only the two
+   strict grammars - never Date.parse, which disagrees with Python. */
+function classifyInstant(value){
+  if(!isExactString(value)) return ACCEPTANCE_INSTANT_MALFORMED;
+  const m=ACCEPTANCE_STRICT_INSTANT.exec(value);
+  if(m){
+    if(!acceptanceCalendarFieldsOk(m)) return ACCEPTANCE_INSTANT_MALFORMED;
+    if(m[8]!==undefined && (Number(m[9])>23 || Number(m[10])>59))
+      return ACCEPTANCE_INSTANT_MALFORMED;     /* "+03:60" is rejected here */
+    return ACCEPTANCE_INSTANT_AWARE;
+  }
+  const n=ACCEPTANCE_STRICT_NAIVE_INSTANT.exec(value);
+  if(n && acceptanceCalendarFieldsOk(n)) return ACCEPTANCE_INSTANT_NAIVE;
+  return ACCEPTANCE_INSTANT_MALFORMED;
+}
+function parseStrictInstantMs(value){
+  if(classifyInstant(value)!==ACCEPTANCE_INSTANT_AWARE) return null;
+  const m=ACCEPTANCE_STRICT_INSTANT.exec(value);
+  let offsetMinutes=0;
+  if(m[8]!==undefined){
+    offsetMinutes=Number(m[9])*60+Number(m[10]);
+    if(m[8]==="-") offsetMinutes=-offsetMinutes;
+  }
+  const millis=m[7]===undefined ? 0 : Number(String(m[7]).padEnd(3,"0"));
+  const utc=Date.UTC(Number(m[1]), Number(m[2])-1, Number(m[3]),
+                     Number(m[4]), Number(m[5]), Number(m[6]), millis);
+  if(!Number.isFinite(utc)) return null;
+  return utc - offsetMinutes*60000;
+}
+/* Awareness only: is this string anchored to an unambiguous instant? What the
+   provider's clock MEANS (trade time, quote time, page render) is unproven and
+   stays a provenance/capability question. */
+function classifyTimestampAwareness(value){
+  return parseStrictInstantMs(value)===null ? "UNKNOWN" : "AWARE";
+}
+function normalizedAcceptanceSymbol(value){
+  if(!isExactString(value)) return null;
+  let text=value.toUpperCase();
+  if(text.endsWith(".IS")) text=text.slice(0,-3);
+  return ACCEPTANCE_SYMBOL.test(text) ? text : null;
+}
+/* Verdict B — are the row's own claims internally consistent? (timestamp-free) */
+function evaluateQuoteClaimValidity(row, symbol){
+  if(!row || typeof row!=="object" || Array.isArray(row)) return ACCEPTANCE_REASON.ROW_MISSING;
+  const rawSymbol=row.symbol;
+  if(symbol!==undefined && symbol!==null){
+    const expected=normalizedAcceptanceSymbol(symbol);
+    if(expected===null) return ACCEPTANCE_REASON.SYMBOL_INVALID;
+    let actual;
+    if(rawSymbol===null || rawSymbol===undefined || rawSymbol===""){
+      actual=expected;                          /* parent map-key fallback */
+    }else{
+      actual=normalizedAcceptanceSymbol(rawSymbol);
+      if(actual===null) return ACCEPTANCE_REASON.SYMBOL_INVALID;
+    }
+    if(actual!==expected) return ACCEPTANCE_REASON.SYMBOL_MISMATCH;
+  }else if(rawSymbol!==null && rawSymbol!==undefined && rawSymbol!=="" &&
+           normalizedAcceptanceSymbol(rawSymbol)===null){
+    return ACCEPTANCE_REASON.SYMBOL_INVALID;
+  }
+  if(row.is_stale!==false) return ACCEPTANCE_REASON.STALE_FLAG;
+  const status=row.source_status;
+  if(!isExactString(status)) return ACCEPTANCE_REASON.SOURCE_STATUS_INVALID;
+  if(status.toLowerCase()!=="ok") return ACCEPTANCE_REASON.SOURCE_STATUS_NOT_OK;
+  const price=parseNumericField(row.last_price);
+  if(price===null || price<=0) return ACCEPTANCE_REASON.PRICE_INVALID;
+  /* Type gate only: which currencies are acceptable stays a product decision,
+     but a non-string currency is a malformed row. */
+  const currency=row.currency;
+  if(currency!==null && currency!==undefined && !isExactString(currency))
+    return ACCEPTANCE_REASON.CURRENCY_INVALID;
+  return ACCEPTANCE_REASON.OK;
+}
+/* May a consumer read this payload at all? Composes the same contract this
+   shell already applies in validLatestPricesPayload plus the age check. */
+function evaluatePayloadAcceptance(payload, nowMs){
+  if(!acceptanceClockOk(nowMs)) return ACCEPTANCE_REASON.EVALUATION_CLOCK_INVALID;
+  if(!payload || typeof payload!=="object" || Array.isArray(payload)) return ACCEPTANCE_REASON.PAYLOAD_INVALID;
+  const schemaVersion=payload.schema_version;
+  if(!isExactNumber(schemaVersion) || schemaVersion!==ACCEPTANCE_EXPECTED_SCHEMA_VERSION)
+    return ACCEPTANCE_REASON.PAYLOAD_SCHEMA_VERSION_INVALID;
+  const dataMode=payload.data_mode;
+  if(!isExactString(dataMode) || dataMode!==ACCEPTANCE_EXPECTED_DATA_MODE)
+    return ACCEPTANCE_REASON.PAYLOAD_DATA_MODE_INVALID;
+  if(payload.is_realtime!==false) return ACCEPTANCE_REASON.PAYLOAD_IS_REALTIME_INVALID;
+  const symbols=payload.symbols;
+  if(!symbols || typeof symbols!=="object" || Array.isArray(symbols))
+    return ACCEPTANCE_REASON.PAYLOAD_SYMBOLS_INVALID;
+  const rawGenerated=payload.generated_at_utc;
+  if(rawGenerated===null || rawGenerated===undefined || rawGenerated==="")
+    return ACCEPTANCE_REASON.PAYLOAD_TIME_MISSING;
+  const generatedKind=classifyInstant(rawGenerated);
+  if(generatedKind===ACCEPTANCE_INSTANT_MALFORMED) return ACCEPTANCE_REASON.PAYLOAD_TIME_INVALID;
+  if(generatedKind===ACCEPTANCE_INSTANT_NAIVE) return ACCEPTANCE_REASON.PAYLOAD_TIME_NOT_AWARE;
+  const generatedMs=parseStrictInstantMs(rawGenerated);
+  const freshness=payload.freshness;
+  if(!freshness || typeof freshness!=="object" || Array.isArray(freshness))
+    return ACCEPTANCE_REASON.PAYLOAD_MAX_AGE_INVALID;
+  const maxAge=exactNumber(freshness.max_age_minutes);
+  if(maxAge===null || maxAge<=0) return ACCEPTANCE_REASON.PAYLOAD_MAX_AGE_INVALID;
+  const ageMs=nowMs-generatedMs;
+  if(ageMs < -ACCEPTANCE_FUTURE_TOLERANCE_MS) return ACCEPTANCE_REASON.PAYLOAD_FUTURE;
+  if(ageMs > maxAge*60000) return ACCEPTANCE_REASON.PAYLOAD_EXPIRED;
+  return ACCEPTANCE_REASON.OK;
+}
+/* ===== Unverified intraday DISPLAY eligibility (availability, not authority)
+   The provider gives no verifiable per-row quote/trade time, so the verified
+   path below rejects every production row with QUOTE_TIME_MISSING and the UI
+   falls back to a dated close. This function answers a DIFFERENT and weaker
+   question: may a valid canonical intraday price be SHOWN, clearly labelled as
+   having an unverifiable source time?
+
+   It is deliberately built on top of the verified verdict rather than beside
+   it: the row must fail the verified path for EXACTLY ONE reason — a missing
+   quote time. Everything else the verified path demands (payload contract,
+   symbol match, non-stale, source_status ok, positive price, currency type,
+   snapshot not future, snapshot within its own max_age) must already hold. A
+   malformed or unaware timestamp is NOT eligible: that is a data-quality
+   signal, not an absent one.
+
+   On top of that it requires, all of them:
+     * an OPEN or HALF_DAY day in the OFFICIAL committed calendar,
+     * the current moment inside that day's publish window (half-open,
+       cutoff exclusive, half-day cutoff honoured),
+     * the snapshot built on the SAME Istanbul day,
+     * snapshot BUILD age <= 60 minutes.
+
+   The 60 minutes is an INGESTION/BUILD age bound on generated_at_utc. It is
+   NOT quote freshness and must never be shown as the age of the price. If the
+   calendar is missing or malformed the answer is "no" — the session is never
+   assumed to be open. Its own vocabulary is kept separate from
+   ACCEPTANCE_REASON so the Python/JavaScript parity contract of the acceptance
+   domain stays exactly as merged. ===== */
+const INTRADAY_DISPLAY={
+  OK:"OK",
+  CLOCK_INVALID:"CLOCK_INVALID",
+  VERIFIED_PATH_APPLIES:"VERIFIED_PATH_APPLIES",
+  ROW_NOT_ELIGIBLE:"ROW_NOT_ELIGIBLE",
+  CALENDAR_UNAVAILABLE:"CALENDAR_UNAVAILABLE",
+  SESSION_NOT_ELIGIBLE:"SESSION_NOT_ELIGIBLE",
+  OUTSIDE_PUBLISH_WINDOW:"OUTSIDE_PUBLISH_WINDOW",
+  SNAPSHOT_NOT_FROM_TODAY:"SNAPSHOT_NOT_FROM_TODAY",
+  BUILD_AGE_EXCEEDED:"BUILD_AGE_EXCEEDED",
+};
+const INTRADAY_DISPLAY_MAX_BUILD_AGE_MS=60*60*1000;
+const INTRADAY_CLOCK=/^([0-9]{2}):([0-9]{2})(?::([0-9]{2}))?$/;
+function intradayClockSeconds(value){
+  if(!isExactString(value)) return null;
+  const m=INTRADAY_CLOCK.exec(value.trim());
+  if(!m) return null;
+  const h=Number(m[1]), mi=Number(m[2]), s=m[3]===undefined?0:Number(m[3]);
+  if(h>23 || mi>59 || s>59) return null;
+  return h*3600+mi*60+s;
+}
+/* Local wall-clock seconds in Europe/Istanbul for a given instant. */
+function istanbulClockSeconds(ms){
+  const parts=new Intl.DateTimeFormat("en-GB",{
+    timeZone:"Europe/Istanbul",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false,
+  }).formatToParts(new Date(ms));
+  const get=type=>(parts.find(part=>part.type===type)||{}).value||"";
+  const seconds=intradayClockSeconds(`${get("hour")}:${get("minute")}:${get("second")}`);
+  return seconds;
+}
+/* Official calendar, validated. Returns null when it cannot be trusted — the
+   caller then keeps the dated-close fallback instead of assuming an open day. */
+function intradayCalendarContract(calendar){
+  if(!calendar || typeof calendar!=="object" || Array.isArray(calendar)) return null;
+  if(calendar.cutoff_inclusive!==false) return null;
+  const start=intradayClockSeconds(calendar.latest_prices_publish_start);
+  const normal=intradayClockSeconds(calendar.normal_publish_cutoff);
+  const half=intradayClockSeconds(calendar.half_day_publish_cutoff);
+  if(start===null || normal===null || half===null) return null;
+  if(normal<=start || half<=start) return null;
+  if(!Array.isArray(calendar.closed_dates) || !Array.isArray(calendar.half_day_dates)) return null;
+  return {
+    start,
+    normal,
+    half,
+    closed:calendar.closed_dates.filter(isExactString),
+    halfDays:calendar.half_day_dates.filter(isExactString),
+  };
+}
+/* OPEN / HALF_DAY / CLOSED for one Istanbul date key. */
+function intradaySessionKind(contract, dateKey){
+  if(!contract || !/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey||""))) return "CLOSED";
+  if(contract.closed.indexOf(dateKey)!==-1) return "CLOSED";
+  const noonUtc=Date.parse(`${dateKey}T12:00:00Z`);
+  if(!Number.isFinite(noonUtc)) return "CLOSED";
+  const weekday=new Date(noonUtc).getUTCDay();      /* 0=Sun, 6=Sat */
+  if(weekday===0 || weekday===6) return "CLOSED";
+  if(contract.halfDays.indexOf(dateKey)!==-1) return "HALF_DAY";
+  return "OPEN";
+}
+function evaluateUnverifiedIntradayDisplay(row, payload, symbol, calendar, nowMs){
+  const now=(nowMs===undefined) ? Date.now() : nowMs;
+  if(!acceptanceClockOk(now)) return INTRADAY_DISPLAY.CLOCK_INVALID;
+  /* Built ON TOP of the verified verdict: a missing quote time is the ONLY
+     rejection this weaker path may relax. */
+  const verified=evaluateCurrentQuoteUsability(row, payload, symbol, now);
+  if(verified===ACCEPTANCE_REASON.OK) return INTRADAY_DISPLAY.VERIFIED_PATH_APPLIES;
+  if(verified!==ACCEPTANCE_REASON.QUOTE_TIME_MISSING) return INTRADAY_DISPLAY.ROW_NOT_ELIGIBLE;
+
+  const contract=intradayCalendarContract(calendar);
+  if(contract===null) return INTRADAY_DISPLAY.CALENDAR_UNAVAILABLE;
+  const todayKey=istanbulDateKey(now);
+  const kind=intradaySessionKind(contract, todayKey);
+  if(kind!=="OPEN" && kind!=="HALF_DAY") return INTRADAY_DISPLAY.SESSION_NOT_ELIGIBLE;
+
+  const cutoff=(kind==="HALF_DAY") ? contract.half : contract.normal;
+  const clock=istanbulClockSeconds(now);
+  if(clock===null) return INTRADAY_DISPLAY.OUTSIDE_PUBLISH_WINDOW;
+  if(clock<contract.start || clock>=cutoff) return INTRADAY_DISPLAY.OUTSIDE_PUBLISH_WINDOW;
+
+  const generated=parseStrictInstantMs(payload && payload.generated_at_utc);
+  if(generated===null) return INTRADAY_DISPLAY.SNAPSHOT_NOT_FROM_TODAY;
+  if(istanbulDateKey(generated)!==todayKey) return INTRADAY_DISPLAY.SNAPSHOT_NOT_FROM_TODAY;
+  const buildAgeMs=now-generated;
+  /* Negative age = snapshot from the future: rejected outright, exactly like
+     the verified path (consumer future tolerance is zero). */
+  if(buildAgeMs<0 || buildAgeMs>INTRADAY_DISPLAY_MAX_BUILD_AGE_MS)
+    return INTRADAY_DISPLAY.BUILD_AGE_EXCEEDED;
+  return INTRADAY_DISPLAY.OK;
+}
+/* Verdict F — may this consumer present the row as a current delayed quote?
+   Depends on now, so it is recomputed per read and never persisted. */
+function evaluateCurrentQuoteUsability(row, payload, symbol, nowMs){
+  /* An omitted clock means "read the wall clock"; anything else must be a real
+     integer millisecond value. A malformed clock must never grant OK: NaN made
+     every age comparison false, so a bad clock used to pass both gates. */
+  const now=(nowMs===undefined) ? Date.now() : nowMs;
+  if(!acceptanceClockOk(now)) return ACCEPTANCE_REASON.EVALUATION_CLOCK_INVALID;
+  const payloadReason=evaluatePayloadAcceptance(payload, now);
+  if(payloadReason!==ACCEPTANCE_REASON.OK) return payloadReason;
+  const claimReason=evaluateQuoteClaimValidity(row, symbol);
+  if(claimReason!==ACCEPTANCE_REASON.OK) return claimReason;
+  const raw=row.price_time_utc;
+  if(raw===null || raw===undefined || raw==="") return ACCEPTANCE_REASON.QUOTE_TIME_MISSING;
+  const kind=classifyInstant(raw);
+  if(kind===ACCEPTANCE_INSTANT_MALFORMED) return ACCEPTANCE_REASON.QUOTE_TIME_INVALID;
+  if(kind===ACCEPTANCE_INSTANT_NAIVE) return ACCEPTANCE_REASON.QUOTE_TIME_NOT_AWARE;
+  const instant=parseStrictInstantMs(raw);
+  const maxAge=exactNumber(payload.freshness.max_age_minutes);
+  const ageMs=now-instant;
+  if(ageMs < -ACCEPTANCE_FUTURE_TOLERANCE_MS) return ACCEPTANCE_REASON.QUOTE_TIME_FUTURE;
+  if(maxAge!==null && ageMs > maxAge*60000) return ACCEPTANCE_REASON.QUOTE_TIME_EXPIRED;
+  return ACCEPTANCE_REASON.OK;
+}
+
 function usableLatestPriceQuote(payload, symbol){
   const sym=normSymbol(symbol);
   const row=payload && payload.symbols && payload.symbols[sym];
   if(!sym || !row || typeof row!=="object" || Array.isArray(row)) return null;
-  if(normSymbol(row.symbol || sym)!==sym) return null;
-  if(row.is_stale!==false) return null;
-  if(String(row.source_status||"").toLowerCase()!=="ok") return null;
+  /* Single source of the rule: the claim-specific evaluator above. Behaviour
+     is unchanged — any reason code other than OK keeps the dated-EOD
+     fallback in charge, exactly as before. */
+  if(evaluateCurrentQuoteUsability(row, payload, sym, Date.now())!==ACCEPTANCE_REASON.OK) return null;
   const price=num(row.last_price);
-  if(price===null || price<=0) return null;
-  const priceTimeMs=parseAwareIsoMs(row.price_time_utc);
-  if(priceTimeMs===null) return null;
-  const priceAgeMinutes=(Date.now()-priceTimeMs)/60000;
-  if(priceAgeMinutes<0 || priceAgeMinutes>latestPriceMaxAgeMinutes(payload)) return null;
   return {
     price,
     source:"delayed_snapshot",
@@ -872,6 +1252,32 @@ function usableLatestPriceQuote(payload, symbol){
     changePct:num(row.daily_change_pct),
     changeAbs:num(row.daily_change_abs),
   };
+}
+/* Gösterilebilir fakat kaynak saati DOĞRULANAMAYAN gün içi fiyat.
+   Verified okuyucudan ayrı tutulur: dönen nesne source="delayed_unverified"
+   taşır, böylece hem rozet metni hem muhasebe sınırı bu tek alandan karar
+   verir. asOf BİLİNÇLİ olarak yok — bu fiyat için doğrulanmış bir zaman
+   yoktur ve uydurulmaz; ingestedAt yalnız snapshot'ın SİSTEME ALINMA anıdır. */
+function unverifiedIntradayQuote(payload, symbol, calendar, nowMs){
+  const sym=normSymbol(symbol);
+  const row=payload && payload.symbols && payload.symbols[sym];
+  if(!sym || !row || typeof row!=="object" || Array.isArray(row)) return null;
+  const now=(nowMs===undefined) ? Date.now() : nowMs;
+  if(evaluateUnverifiedIntradayDisplay(row, payload, sym, calendar, now)
+     !==INTRADAY_DISPLAY.OK) return null;
+  const price=parseNumericField(row.last_price);
+  if(price===null || price<=0) return null;
+  return {
+    price,
+    source:"delayed_unverified",
+    asOf:null,                                   /* doğrulanmış zaman YOK */
+    ingestedAt:String(payload.generated_at_utc),
+    changePct:parseNumericField(row.daily_change_pct),
+    changeAbs:parseNumericField(row.daily_change_abs),
+  };
+}
+function unverifiedIntradayQuoteFor(symbol){
+  return unverifiedIntradayQuote(S.latestPrices, symbol, S.marketCalendar);
 }
 function applyLatestPrices(payload, options={}){
   const requestId=num(options.requestId);
@@ -904,6 +1310,38 @@ async function loadLatestPrices(options={}){
     const appliedId=num(S.latestPricesAppliedSeq)||0;
     if(!options.preserveExisting && requestId>=appliedId) S.latestPrices=null;
     if(typeof console!=="undefined" && console.debug) console.debug("latest_prices ignored", e.message);
+    return false;
+  }
+}
+
+/* Resmî BIST takvimi (yalnız OKUMA). Unverified gün içi fiyatın gösterilip
+   gösterilemeyeceğine karar vermek için gerekir: kapalı gün / yarım gün /
+   publish penceresi bilgisi başka hiçbir yerden türetilemez. Okunamazsa
+   S.marketCalendar null kalır ve karar fail-safe olarak tarihli kapanışa
+   düşer — seansın açık olduğu ASLA varsayılmaz. */
+/* En fazla bir kez ve fiyat akışından bağımsız yükle; başarısızlık sessizdir
+   ve S.marketCalendar null kalır (fail-safe: seans açık VARSAYILMAZ). */
+function ensureMarketCalendar(){
+  if(S.marketCalendar!==null) return Promise.resolve(true);
+  if(S.marketCalendarInFlight) return S.marketCalendarInFlight;
+  const request=loadMarketCalendar({cacheBust:true}).catch(()=>false).finally(()=>{
+    if(S.marketCalendarInFlight===request) S.marketCalendarInFlight=null;
+  });
+  S.marketCalendarInFlight=request;
+  return request;
+}
+async function loadMarketCalendar(options={}){
+  try{
+    const payload=await readJson("data/market_calendar_fallback.json",{
+      cacheBust:Boolean(options.cacheBust),
+      cacheBustKey:`${Date.now()}-cal`,
+    });
+    S.marketCalendar=(payload && typeof payload==="object" && !Array.isArray(payload))
+      ? payload : null;
+    return S.marketCalendar!==null;
+  }catch(e){
+    S.marketCalendar=null;
+    if(typeof console!=="undefined" && console.debug) console.debug("calendar ignored", e.message);
     return false;
   }
 }
@@ -1155,7 +1593,9 @@ function pfPath(slug){ return `webapp/portfolios/${slugify(slug||S.profile)}.jso
 function portfolioTotals(positions){
   let total=0, cost=0, priced=0, costed=0;
   for(const p of positions){
-    const quote=currentQuoteFor(p.symbol);
+    /* MUHASEBE: doğrulanmamış gün içi fiyat portföy değeri/K-Z otoritesi
+       DEĞİLDİR — bu toplamlar bugünkü davranışla birebir aynı kalır. */
+    const quote=accountingQuoteFor(p.symbol);
     const price=quote ? quote.price : null;
     const qty=num(p.quantity), avg=num(p.avg_cost);
     const validQty=qty!==null && qty>0;
@@ -1188,7 +1628,9 @@ function renderPortfolioTable(positions, editable){
         <td><button class="btn small gray" onclick="cancelEditPosition()">İptal</button></td></tr>`;
       return;
     }
-    const quote=currentQuoteFor(sym);
+    /* Satır fiyatı da muhasebe zincirinden: satır Değer/K-Z hücreleri ile
+       alttaki toplamlar aynı fiyatı kullanmak zorundadır. */
+    const quote=accountingQuoteFor(sym);
     const price=quote ? quote.price : null;
     const qty=num(p.quantity), avg=num(p.avg_cost);
     const validQty=qty!==null && qty>0;
@@ -1276,7 +1718,9 @@ function updatePriceHint(){
   if(!el) return;
   const sym=normSymbol(document.getElementById("pfSym").value);
   if(!sym){ el.textContent=""; return; }
-  const quote=currentQuoteFor(sym);
+  /* "kullanılan fiyat" ipucu muhasebe zincirini yansıtmalı; aksi halde
+     kullanıcı doğrulanmamış bir fiyatın portföyünde kullanıldığını sanır. */
+  const quote=accountingQuoteFor(sym);
   el.innerHTML = quote
     ? `${esc(sym)} kullanılan fiyat: ${fmt(quote.price)} TL${priceBadgeHtml(quote)}`
     : `${esc(sym)} için repo verisinde fiyat bulunamadı.${priceBadgeHtml(null)}`;
@@ -1814,6 +2258,9 @@ function renderFin(sym){
     ["Ciro (yıllıklandırılmış)", fmtTL(fin.revenue)+" TL"+(num(fin.revenue_growth)!==null?`  (büyüme ${g(fin.revenue_growth)})`:"")],
     ["Net kâr", fmtTL(fin.net_income)+" TL"+(num(fin.net_income_growth)!==null?`  (büyüme ${g(fin.net_income_growth)})`:"")],
     ["FAVÖK", fmtTL(fin.ebitda)+" TL"],
+    ["İşletme nakit akışı", fmtTL(fin.operating_cf)+" TL"],
+    ["Yatırım harcamaları", fmtTL(fin.capex)+" TL"],
+    ["Serbest nakit akışı", fmtTL(fin.free_cash_flow)+" TL"],
     ["Özkaynak", fmtTL(fin.equity_spot)+" TL"],
     ["Toplam varlık", fmtTL(fin.total_assets)+" TL"],
     ["Net borç", fmtTL(fin.net_debt)+" TL"],
@@ -1859,7 +2306,19 @@ function bundleQuote(symbol){
   const prev=n>1?num(bars.c[n-2]):null;
   return {price, source:"bundle_close", asOf, prev:prev!==null&&prev>0?prev:null};
 }
+/* GÖSTERİM zinciri (liste/detay/takip/karşılaştır):
+     doğrulanmış gün içi -> DOĞRULANMAMIŞ gün içi -> tarihli kapanış -> yok.
+   Ortadaki halka yalnız görünürlük içindir ve her zaman uyarı rozetiyle gelir. */
 function currentQuoteFor(symbol){
+  return delayedQuoteFor(symbol) || unverifiedIntradayQuoteFor(symbol)
+    || bundleQuote(symbol) || null;
+}
+/* MUHASEBE zinciri (portföy değeri/K-Z ve "kullanılan fiyat" ipucu):
+     doğrulanmış gün içi -> tarihli kapanış -> yok.
+   Doğrulanmamış fiyat buraya GİRMEZ. Bu, bugünkü davranışın birebir aynısıdır:
+   zamanı doğrulanamayan bir fiyat yatırım muhasebesinde otorite olamaz.
+   (Scoring/ranking/aday seçimi ve Telegram bu dosyayı hiç okumaz.) */
+function accountingQuoteFor(symbol){
   return delayedQuoteFor(symbol) || bundleQuote(symbol) || null;
 }
 function istanbulDateKey(ms){
@@ -1869,7 +2328,26 @@ function istanbulDateKey(ms){
   const get=type=>(parts.find(part=>part.type===type)||{}).value||"";
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
+/* Doğrulanmamış gün içi fiyatın kullanıcıya görünen metni. "canlı", "anlık",
+   "güncel", "gerçek zamanlı" veya "15 dakika gecikmeli" gibi bir iddia
+   TAŞIMAZ; kaynak saatinin doğrulanamadığını açıkça söyler. */
+const UNVERIFIED_INTRADAY_LABEL="Gün içi fiyat — kaynak saati doğrulanamadı";
+const UNVERIFIED_INTRADAY_DETAIL=
+  "Kaynak, bu fiyat için doğrulanabilir işlem zamanı sağlamıyor.";
+function ingestedAtLabel(quote){
+  const ms=parseStrictInstantMs(quote && quote.ingestedAt);
+  if(ms===null) return "";
+  const parts=new Intl.DateTimeFormat("tr-TR",{
+    timeZone:"Europe/Istanbul",hour:"2-digit",minute:"2-digit",hour12:false,
+  }).formatToParts(new Date(ms));
+  const get=type=>(parts.find(part=>part.type===type)||{}).value||"";
+  return (get("hour") && get("minute")) ? `Sisteme alınma: ${get("hour")}:${get("minute")}` : "";
+}
 function priceBadgeText(quote){
+  if(quote && quote.source==="delayed_unverified"){
+    const ingested=ingestedAtLabel(quote);
+    return ingested ? `${UNVERIFIED_INTRADAY_LABEL} · ${ingested}` : UNVERIFIED_INTRADAY_LABEL;
+  }
   if(quote && quote.source==="delayed_snapshot"){
     const ms=parseAwareIsoMs(quote.asOf);
     if(ms!==null){
@@ -1889,7 +2367,13 @@ function priceBadgeText(quote){
 }
 function priceBadgeHtml(quote){
   const text=priceBadgeText(quote);
-  return `<span class="price-badge" title="${esc(text)}" aria-label="${esc(text)}">${esc(text)}</span>`;
+  const unverified=Boolean(quote && quote.source==="delayed_unverified");
+  /* Uyarı METİNDİR: renk ve ⚠ yalnız destekleyicidir, gizlenmez ve tooltip'e
+     gömülmez. title/aria-label ek açıklamayı taşır. */
+  const cls=unverified ? "price-badge unverified" : "price-badge";
+  const hint=unverified ? `${text} — ${UNVERIFIED_INTRADAY_DETAIL}` : text;
+  const body=unverified ? `\u26a0 ${text}` : text;
+  return `<span class="${cls}" title="${esc(hint)}" aria-label="${esc(hint)}">${esc(body)}</span>`;
 }
 /* Tek noktadan günlük değişim: varsa gecikmeli snapshot yüzdesi, yoksa
    paketin son iki kapanışından hesap (Hisseler + Takip Listesi + Portföy
@@ -2126,6 +2610,11 @@ function requestLatestPrices(options={}){
   const last=num(S.latestPricesLastAttemptMs)||0;
   if(!options.force && last>0 && now-last<PRICE_DATA_REFRESH_MS) return Promise.resolve(false);
   S.latestPricesLastAttemptMs=now;
+  /* Takvim isteği fiyat zincirine BAĞLANMAZ: fiyat yenileme state machine'i
+     (in-flight dedupe, throttle, preserveExisting) aynen korunur. Takvim
+     yoksa unverified gün içi kararı fail-safe olarak tarihli kapanışa düşer,
+     bu yüzden takvimi beklemek gerekmez. */
+  void ensureMarketCalendar();
   const request=loadLatestPrices({cacheBust:true,preserveExisting:options.preserveExisting!==false})
     .then(applied=>{
       refreshVisiblePriceSurface();
