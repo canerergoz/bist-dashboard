@@ -423,7 +423,7 @@
 /* Görünür build kimliği: commit hash'ine bağlı olmayan, monoton CalVer
    YYYY.MM.DD.ordinal. Her webapp release adayında ordinal artırılır; bu kimlik
    tek başına deploy/canlılık iddiası değildir. */
-const APP_BUILD_ID="2026.07.27.1";
+const APP_BUILD_ID="2026.10.15.1";
 function applyAppBuildId(){
   document.documentElement.dataset.appBuildId=APP_BUILD_ID;
   const el=document.getElementById("appBuildId");
@@ -495,8 +495,12 @@ const S = {
   latestPricesRequestSeq: 0,
   latestPricesAppliedSeq: 0,
   bundlePromise: null,
+  /* Aday deposu yalnız bütünlüğü doğrulanmış artifact'le dolar ve yalnız
+     P0A_ARTIFACT_GATE erişicileriyle okunur (candidateRows/rowBySymbol). */
   candidateRows: [],
   rowBySymbol: {},
+  candidateGate: {seq: 0, phase: "LOADING", reason: "", generatedAt: null},
+  candidateLoadSeq: 0,
   positions: [],
   editingPos: null,   // kendi portföyünde düzenlenen satır indeksi (yoksa null)
   relatedPortfolios: [],
@@ -618,6 +622,12 @@ async function readJson(path, options={}){
   if (r.status === 404) return null;
   if (r.status === 401 || r.status === 403) throw new Error("Token reddedildi (yetki/expiry kontrol et).");
   if (!r.ok) throw new Error("Okuma hatası: HTTP " + r.status);
+  if(options.withText){
+    // The candidate gate parses the exact text itself, token by token (see
+    // P0A_ARTIFACT_GATE): parseJsonText's NaN rewrite does not know where a
+    // JSON string starts or ends and can change string content.
+    return {text: await r.text()};
+  }
   return parseJsonText(await r.text(), path);
 }
 async function fileSha(path){
@@ -674,6 +684,13 @@ function fmtCost(x){
   return n!==null ? n.toLocaleString("tr-TR",{minimumFractionDigits:0,maximumFractionDigits:6}) : "-";
 }
 function fmtInt(x){ const n=Number(x); return Number.isFinite(n) ? n.toLocaleString("tr-TR",{maximumFractionDigits:0}) : "-"; }
+/* Aday görünümleri için eksik-değer gösterimi: fmt/fmtInt null'ı ve boş metni
+   Number() ile 0'a çevirir ("RS20 0,00"). Burada eksik (num() === null: null,
+   undefined, NaN, boş/"-" metin, boolean) "-" olur; gerçek 0 ve diğer mevcut
+   değerler fmt/fmtInt ile aynen biçimlenir. Diğer ekranlar fmt/fmtInt'i
+   değişmeden kullanır. */
+function fmtPresent(x, d){ return num(x)===null ? "-" : fmt(x, d); }
+function fmtIntPresent(x){ return num(x)===null ? "-" : fmtInt(x); }
 /* Görünen her tarih gün/ay/yıl (kullanıcı tercihi 2026-07-05). İç mantıkta
    (asOf sıralaması, bar index'leri) ISO kalır — string karşılaştırması ISO'ya bağlı. */
 function fmtDate(value){
@@ -1379,7 +1396,7 @@ function knownDetailSymbols(){
     const sym=normSymbol(p && p.symbol);
     if(sym) symbols.add(sym);
   });
-  Object.keys(S.rowBySymbol||{}).forEach(sym=>{
+  visibleCandidateSymbols().forEach(sym=>{
     const n=normSymbol(sym);
     if(n) symbols.add(n);
   });
@@ -1405,7 +1422,8 @@ function preferredDetailSymbol(){
   }
   const pos=(S.positions||[]).find(p=>normSymbol(p && p.symbol));
   if(pos) return normSymbol(pos.symbol);
-  const firstCandidate=S.candidateRows.length ? candidateRowsForDisplay()[0] : null;
+  // Engellenmiş/doğrulanmamış aday listesinden varsayılan sembol seçilmez.
+  const firstCandidate=candidateRowsForDisplay()[0] || null;
   if(firstCandidate) return normSymbol(firstCandidate["Hisse"] || firstCandidate["Kullanılan Güncel Sembol"]);
   const bundleSymbols=S.chartBundle && Array.isArray(S.chartBundle.symbols) ? S.chartBundle.symbols : [];
   const firstEquity=bundleSymbols.find(s=>isEquitySymbol(s));
@@ -1430,22 +1448,488 @@ function makeDefaultDetailSymbol(){
   msg(`${sym} varsayılan hisse yapıldı (Detay sekmesi bununla açılır).`);
 }
 
-async function loadMarketData(){
-  // Bundle, current-price resolver'ın güvenilir EOD katmanıdır. Candidate
-  // artifact'i ve bundle paralel okunur; bundle yoksa resolver "Veri yok"a
-  // düşer, tarihsel seçim/tracking fiyatına dönmez.
-  ensureBundle().catch(()=>null);
-  const art = await readJson("data/latest_core_candidates.json");
-  if(!art) throw new Error("data/latest_core_candidates.json bulunamadı.");
-  const rows = rowsFromArtifact(art).map(row=>Object.assign({}, row));
-  const computed = attachComputedV3(rows);
-  S.candidateRows = rows;
-  S.rowBySymbol = {};
+/* === P0A_ARTIFACT_GATE:BEGIN ===
+   Aday artifact'i kapısı (20261015-webapp-artifact-integrity-gate).
+
+   Aday görünümleri (Adaylar tablosu/başlığı/rozeti, Detay aday kartları ve
+   aday listesinden türetilen varsayılan sembol) aday satırlarını YALNIZ bu
+   bloktaki erişicilerden okur. Karar iki adımdır, sırası sabittir:
+
+   1. Teknik bütünlük — src/measurement/technical_integrity.py verify_artifact
+      sözleşmesinin JavaScript karşılığı: aynı adım sırası, aynı neden
+      sözlüğü, aynı ranking_binding baytları ve SHA-256 (Web Crypto). Kural:
+      bu taraf bir artifact'i yalnız Python da kabul ettiğinde kabul eder.
+      Bu çalışma ortamında birebir taklit edilemeyen girdiler (metin sayılar,
+      metin olmayan sembol/durum, parseJsonText'in null'a çevirdiği NaN'ın
+      Python'da farklı anlam taşıdığı kanıt alanları) fail-closed
+      "verifier_unsupported_input" olur. Parite
+      tests/test_webapp_candidate_integrity_gate.py ile pinlidir. Binding bir
+      bütünlük bağıdır, kimlik doğrulama değildir: kanıtın bu satırlara
+      (sembol, durum, bar seansı, Kapanış/SMA 20/ATR 14/rs_20, sıra), bu
+      run_id'ye ve bu data_asof_session'a ait olduğunu gösterir; skorları,
+      isimleri, piyasa verisinin doğruluğunu ve güncelliği kapsamaz.
+   2. Güncellik — Telegram'ın 24/80 saat politikası (morning_scan.py
+      ARTIFACT_FRESH_HOURS / ARTIFACT_STALE_HOURS) generated_at üzerinden:
+      <24 normal, 24..80 eski-veri uyarısıyla, >80 engel. Telegram'dan katı
+      olduğu yerler: generated_at eksik/geçersiz/zaman dilimsiz ise ya da
+      gelecekteyse (tolerans ACCEPTANCE_FUTURE_TOLERANCE_MS = 0) engel;
+      selected_at'e düşülmez. generated_at tam mikrosaniye olarak
+      karşılaştırılır (cihaz saati Date.now milisaniyesidir). Her çizimde
+      yeniden hesaplanır, açık sekme zamanla eskir. Workflow'daki
+      --max-age-hours 6 üretim sonrası kapıdır, bu tüketici politikası değildir.
+
+   Görünür yalnız VERIFIED + FRESH/AGING'dir; bilinmeyen her durum engeldir.
+   Her kapı geçişinin hemen ardından aday yüzeyleri yeniden çizilir (LOADING
+   ilk await'ten önce): DOM, deponun o anki kararının göstermeyeceği bir aday
+   satırını, skoru ya da V3_LIVE rozetini hiçbir an taşımaz. Ham artifact
+   değiştirilmez; sıra, skor ve seçim burada yeniden hesaplanmaz. */
+const P0A_CONTRACT_VERSION="P0A_TECHNICAL_INTEGRITY_V1";
+const P0A_STAGE="SCAN_PRE_SELECTION";
+const P0A_ARTIFACT_FIELD="technical_integrity";
+const P0A_ROW_STATE_FIELD="technical_integrity_state";
+const P0A_ROW_BAR_SESSION_FIELD="technical_integrity_bar_session";
+const P0A_VERDICT_PROVEN_VALID="PROVEN_VALID";
+const P0A_BENCHMARK_VALID="VALID";
+const P0A_STATE_VALID="VALID";
+const P0A_ACCEPTED_POOL_STATES=["VALID","RS_SHORT_HISTORY_PROVEN"];
+/* ROW_STATES - ACCEPTED_POOL_STATES - EXCLUDED_BY_EXISTING_CONTRACT */
+const P0A_FAILING_POOL_STATES=["BENCHMARK_INPUT_INVALID","PRICE_BAR_INCOMPLETE","SCAN_ERROR",
+  "TECHNICAL_INPUT_INVALID","VALIDATION_UNDETERMINABLE"];
+const P0A_RANKED_TECHNICAL_FIELDS=["Kapanış","SMA 20","ATR 14","rs_20"];
+const P0A_BENCHMARK_FACTS=["close_valid","regime_window_valid","regime_sma_valid"];
+const CANDIDATE_ARTIFACT_FRESH_HOURS=24;
+const CANDIDATE_ARTIFACT_STALE_HOURS=80;
+const CANDIDATE_GATE_PHASE={LOADING:"LOADING", VERIFIED:"VERIFIED", BLOCKED:"BLOCKED"};
+const CANDIDATE_VIEW={LOADING:"LOADING", FRESH:"FRESH", AGING:"AGING", BLOCKED:"BLOCKED"};
+const P0A_UNSUPPORTED=Symbol("p0a-unsupported-input");
+const P0A_UNAVAILABLE=Symbol("p0a-verifier-unavailable");
+
+function p0aIsMapping(value){
+  return value!==null && typeof value==="object" && !Array.isArray(value);
+}
+/* Python _finite on the shared domain: a JSON number (finite or not) or a
+   missing value. Python also parses numeric TEXT with float(); that grammar
+   differs from any JS parser, so text, arrays and objects are unsupported. */
+function p0aFinite(value){
+  if(value===null || value===undefined || typeof value==="boolean") return null;
+  /* JSON.parse yields a non-finite number only for an overflowing literal
+     (parseJsonText already rewrote NaN/Infinity tokens to null). Python reads
+     an overflowing float literal as inf but raises on an overflowing integer;
+     the two cannot be told apart here. */
+  if(typeof value==="number") return Number.isFinite(value) ? value : P0A_UNSUPPORTED;
+  return P0A_UNSUPPORTED;
+}
+/* Text that UTF-8 can encode: Python's ranking_binding raises on a lone
+   surrogate, JSON.stringify escapes it. */
+function p0aWellFormed(text){
+  for(let i=0; i<text.length; i++){
+    const c=text.charCodeAt(i);
+    if(c>=0xD800 && c<=0xDBFF){
+      const d=text.charCodeAt(i+1);
+      if(!(d>=0xDC00 && d<=0xDFFF)) return false;
+      i++;
+    }else if(c>=0xDC00 && c<=0xDFFF){
+      return false;
+    }
+  }
+  return true;
+}
+/* Python _session_text, strict: exactly YYYY-MM-DD with ASCII digits and a
+   real calendar date. Python also strips whitespace and accepts the ISO week
+   form; both are rejected here, which can only block, never admit. */
+const P0A_SESSION_TEXT=/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/;
+function p0aSessionText(value){
+  if(!isExactString(value)) return null;
+  const m=P0A_SESSION_TEXT.exec(value);
+  if(!m) return null;
+  const year=Number(m[1]), month=Number(m[2]), day=Number(m[3]);
+  if(year<ACCEPTANCE_MIN_YEAR || year>ACCEPTANCE_MAX_YEAR || month<1 || month>12 || day<1 || day>31) return null;
+  const probe=new Date(Date.UTC(year, month-1, day));
+  return probe.getUTCFullYear()===year && probe.getUTCMonth()===month-1 && probe.getUTCDate()===day
+    ? value : null;
+}
+function p0aSessionRelation(barSession, dataSession){
+  const bar=p0aSessionText(barSession), data=p0aSessionText(dataSession);
+  if(bar===null || data===null) return "UNKNOWN";
+  if(bar===data) return "CURRENT";
+  return bar<data ? "LAGGED" : "AFTER_DATA_SESSION";
+}
+/* Python _artifact_run_id. A top-level run_id that is null is unsupported:
+   parseJsonText turns NaN into null, and Python reads NaN as the run "nan"
+   while it reads null as "fall back to run_identity". */
+function p0aArtifactRunId(artifact){
+  if(Object.prototype.hasOwnProperty.call(artifact, "run_id") && artifact.run_id===null) return P0A_UNSUPPORTED;
+  let value=artifact.run_id;
+  if((value===undefined || value==="") && p0aIsMapping(artifact.run_identity)){
+    value=artifact.run_identity.run_id;
+  }
+  if(value===undefined || value===null || value==="") return null;
+  return isExactString(value) && p0aWellFormed(value) ? value : P0A_UNSUPPORTED;
+}
+/* Python float repr (json.dumps of a float): shortest round-trip digits, fixed
+   notation for decimal exponents in [-4, 16), otherwise d.ddde+XX. */
+function p0aPyFloatRepr(x){
+  if(Object.is(x, -0)) return "-0.0";
+  const [mantissa, expText]=x.toExponential().split("e");
+  const negative=mantissa.startsWith("-");
+  const digits=mantissa.replace("-", "").replace(".", "");
+  const exp=Number(expText);
+  let body;
+  if(exp>=-4 && exp<16){
+    if(exp>=0){
+      body=`${digits.slice(0, exp+1).padEnd(exp+1, "0")}.${digits.slice(exp+1) || "0"}`;
+    }else{
+      body=`0.${"0".repeat(-exp-1)}${digits}`;
+    }
+  }else{
+    const fraction=digits.length>1 ? `.${digits.slice(1)}` : "";
+    body=`${digits[0]}${fraction}e${exp<0?"-":"+"}${String(Math.abs(exp)).padStart(2, "0")}`;
+  }
+  return negative ? `-${body}` : body;
+}
+/* json.dumps(ensure_ascii=False) of a str or None; other JSON types are
+   unsupported (their Python text form is runtime-specific). */
+function p0aJsonScalarText(value){
+  if(value===null || value===undefined) return "null";
+  return isExactString(value) && p0aWellFormed(value) ? JSON.stringify(value) : P0A_UNSUPPORTED;
+}
+/* Python str(row.get("Hisse") or "").strip(): text must already be stripped
+   under BOTH whitespace definitions (JS \s and Python str.isspace differ). */
+const P0A_STRIP_EDGE=/^[\s\u001c-\u001f\u0085]|[\s\u001c-\u001f\u0085]$/;
+function p0aSymbolText(row){
+  const value=row["Hisse"];
+  if(value===null || value===undefined || value==="") return "";
+  if(!isExactString(value) || P0A_STRIP_EDGE.test(value) || !p0aWellFormed(value)) return P0A_UNSUPPORTED;
+  return value;
+}
+async function p0aSha256Hex(text){
+  const api=typeof crypto!=="undefined" && crypto ? crypto : null;
+  if(!api || !api.subtle || typeof api.subtle.digest!=="function" || typeof TextEncoder!=="function"){
+    return P0A_UNAVAILABLE;
+  }
+  const digest=await api.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), b=>b.toString(16).padStart(2, "0")).join("");
+}
+/* Python ranking_binding: the exact json.dumps(sort_keys=True,
+   ensure_ascii=False, separators=(",", ":")) bytes, then SHA-256. */
+async function p0aRankingBinding(ranked, run, session){
+  const rows=[];
+  for(const row of ranked){
+    if(!p0aIsMapping(row)) return P0A_UNSUPPORTED;      /* Python raises here */
+    const symbol=p0aSymbolText(row);
+    const state=p0aJsonScalarText(row[P0A_ROW_STATE_FIELD]);
+    const barSession=p0aJsonScalarText(row[P0A_ROW_BAR_SESSION_FIELD]);
+    if(symbol===P0A_UNSUPPORTED || state===P0A_UNSUPPORTED || barSession===P0A_UNSUPPORTED) return P0A_UNSUPPORTED;
+    const parts=[JSON.stringify(symbol), state, barSession];
+    for(const field of P0A_RANKED_TECHNICAL_FIELDS){
+      const value=p0aFinite(row[field]);
+      if(value===P0A_UNSUPPORTED) return P0A_UNSUPPORTED;
+      parts.push(value===null ? "null" : p0aPyFloatRepr(value));
+    }
+    rows.push(`[${parts.join(",")}]`);
+  }
+  const blob=`{"contract":${JSON.stringify(P0A_CONTRACT_VERSION)},`
+    + `"data_asof_session":${JSON.stringify(String(session||""))},`
+    + `"rows":[${rows.join(",")}],"run_id":${JSON.stringify(String(run||""))}}`;
+  return p0aSha256Hex(blob);
+}
+/* Python: counts.get(state) must be falsy. Here only an absent key or the
+   number 0 passes: a null may be a NaN that parseJsonText rewrote, and NaN
+   is truthy in Python. */
+function p0aFailingCountClear(counts, state){
+  const value=counts[state];
+  return value===undefined || value===0;
+}
+/* The verified text under Python's json.loads grammar: RFC 8259 JSON plus the
+   NaN / Infinity / -Infinity constants Python accepts. parseJsonText's NaN
+   rewrite also admits text Python rejects ("-NaN"); such text is refused.
+   Nesting deeper than P0A_JSON_MAX_DEPTH is refused, never recursed into. */
+const P0A_JSON_MAX_DEPTH=64;
+const P0A_JSON_NUMBER=/-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+const P0A_JSON_CONSTANTS=["true","false","null","NaN","-Infinity","Infinity"];
+const P0A_JSON_NON_FINITE=["NaN","-Infinity","Infinity"];
+/* Python's json.loads turns an integer literal (no fraction, no exponent) into
+   int(), which refuses more digits than sys.get_int_max_str_digits() (default
+   4300; any non-zero setting is at least 640). Refusing more than 640 digits
+   keeps "JS accepts => Python accepts" under every valid Python setting.
+   Fraction and exponent literals become float() and have no such limit. */
+const P0A_PY_INT_SAFE_DIGITS=640;
+const P0A_JSON_HEX4=/^[0-9a-fA-F]{4}$/;
+function p0aJsonWs(text, i){
+  while(i<text.length){
+    const c=text.charCodeAt(i);
+    if(c===0x20 || c===0x09 || c===0x0a || c===0x0d) i++;
+    else break;
+  }
+  return i;
+}
+/* A string token starting at text[i]==='"'; the index after it, or -1. */
+function p0aJsonString(text, i){
+  if(text[i]!=='"') return -1;
+  i++;
+  while(i<text.length){
+    const c=text.charCodeAt(i);
+    if(c===0x22) return i+1;
+    if(c<0x20) return -1;
+    if(c===0x5c){
+      const escape=text[i+1];
+      if(escape==="u"){
+        if(!P0A_JSON_HEX4.test(text.slice(i+2, i+6))) return -1;
+        i+=6;
+      }else if(escape!==undefined && '"\\/bfnrt'.includes(escape)){
+        i+=2;
+      }else{
+        return -1;
+      }
+      continue;
+    }
+    i++;
+  }
+  return -1;
+}
+/* One value starting at or after i (leading whitespace allowed); the index
+   after it, or -1. An optional `scan` collects the spans of the NaN /
+   Infinity / -Infinity tokens and notes a refusal that is a limit of this
+   side rather than text Python could not read. */
+function p0aJsonValue(text, i, depth, scan){
+  i=p0aJsonWs(text, i);
+  const c=text[i];
+  if(c==='"') return p0aJsonString(text, i);
+  if(c==="{" || c==="["){
+    if(depth>=P0A_JSON_MAX_DEPTH){ if(scan) scan.unsupported=true; return -1; }
+    const close=c==="{" ? "}" : "]";
+    i=p0aJsonWs(text, i+1);
+    if(text[i]===close) return i+1;
+    for(;;){
+      if(c==="{"){
+        i=p0aJsonString(text, i);
+        if(i<0) return -1;
+        i=p0aJsonWs(text, i);
+        if(text[i]!==":") return -1;
+        i++;
+      }
+      i=p0aJsonValue(text, i, depth+1, scan);
+      if(i<0) return -1;
+      i=p0aJsonWs(text, i);
+      if(text[i]===","){ i=p0aJsonWs(text, i+1); continue; }
+      return text[i]===close ? i+1 : -1;
+    }
+  }
+  for(const constant of P0A_JSON_CONSTANTS){
+    if(text.startsWith(constant, i)){
+      if(scan && P0A_JSON_NON_FINITE.includes(constant)) scan.spans.push([i, i+constant.length]);
+      return i+constant.length;
+    }
+  }
+  P0A_JSON_NUMBER.lastIndex=i;
+  const m=P0A_JSON_NUMBER.exec(text);
+  if(!m || !m[0].length) return -1;
+  if(!/[.eE]/.test(m[0]) && m[0].replace("-", "").length>P0A_PY_INT_SAFE_DIGITS){
+    if(scan) scan.unsupported=true;
+    return -1;
+  }
+  return i+m[0].length;
+}
+function p0aPythonJsonText(text, scan){
+  if(!isExactString(text)) return false;
+  const end=p0aJsonValue(text, 0, 0, scan);
+  return end>=0 && p0aJsonWs(text, end)===text.length;
+}
+/* The candidate artifact as verified and as drawn: the exact text, read
+   under the Python grammar, with only the NaN / Infinity / -Infinity TOKENS
+   replaced by null before JSON.parse. String content is never touched, so
+   run_id, session, symbol and every other text field stay byte for byte
+   what Python reads. {ok, payload} or {ok:false, reason}. */
+function p0aParseArtifactText(text){
+  const scan={spans:[], unsupported:false};
+  if(!p0aPythonJsonText(text, scan)){
+    return {ok:false, reason: scan.unsupported ? "verifier_unsupported_input" : "artifact_unreadable"};
+  }
+  let rebuilt="", last=0;
+  for(const [start, end] of scan.spans){
+    rebuilt+=text.slice(last, start)+"null";
+    last=end;
+  }
+  rebuilt+=text.slice(last);
+  try{ return {ok:true, payload:JSON.parse(rebuilt)}; }
+  catch(err){ return {ok:false, reason:"artifact_unreadable"}; }
+}
+/* The value span of the LAST member named `key` (keys decoded, escapes
+   included) of the object at `start` — json.loads and JSON.parse both keep
+   the last duplicate. null when absent or not an object. */
+function p0aJsonMember(text, start, key){
+  let i=p0aJsonWs(text, start);
+  if(text[i]!=="{") return null;
+  i=p0aJsonWs(text, i+1);
+  if(text[i]==="}") return null;
+  let found=null;
+  for(;;){
+    const keyEnd=p0aJsonString(text, i);
+    if(keyEnd<0) return null;
+    let name;
+    try{ name=JSON.parse(text.slice(i, keyEnd)); }catch(err){ return null; }
+    i=p0aJsonWs(text, keyEnd);
+    if(text[i]!==":") return null;
+    const valueStart=p0aJsonWs(text, i+1);
+    const valueEnd=p0aJsonValue(text, valueStart, 1);
+    if(valueEnd<0) return null;
+    if(name===key) found=[valueStart, valueEnd];
+    i=p0aJsonWs(text, valueEnd);
+    if(text[i]===","){ i=p0aJsonWs(text, i+1); continue; }
+    return text[i]==="}" ? found : null;
+  }
+}
+/* The literal text of technical_integrity.pool.evaluated_rows on its real
+   object path, or null. */
+function p0aEvaluatedRowsLiteral(rawText){
+  const evidence=p0aJsonMember(rawText, 0, P0A_ARTIFACT_FIELD);
+  const pool=evidence && p0aJsonMember(rawText, evidence[0], "pool");
+  const rows=pool && p0aJsonMember(rawText, pool[0], "evaluated_rows");
+  return rows ? rawText.slice(rows[0], rows[1]) : null;
+}
+/* Python: isinstance(evaluated_rows, int) and evaluated_rows >= 1. JSON.parse
+   reads 628 and 628.0 alike; Python rejects the float, so the literal at the
+   member's own path in the verified text must be an integer. */
+function p0aEvaluatedRowsOk(pool, rawText){
+  const value=pool.evaluated_rows;
+  if(typeof value!=="number" || !Number.isInteger(value) || value<1 || !isExactString(rawText)) return false;
+  const literal=p0aEvaluatedRowsLiteral(rawText);
+  return literal!==null && /^(?:0|[1-9][0-9]*)$/.test(literal);
+}
+/* Python _ranked_row_problem. */
+function p0aRankedRowProblem(row, session){
+  if(!p0aIsMapping(row)) return true;
+  const state=row[P0A_ROW_STATE_FIELD];
+  if(!P0A_ACCEPTED_POOL_STATES.includes(state)) return true;
+  const relation=p0aSessionRelation(row[P0A_ROW_BAR_SESSION_FIELD], session);
+  if(relation!=="CURRENT" && relation!=="LAGGED") return true;
+  const close=p0aFinite(row["Kapanış"]), sma=p0aFinite(row["SMA 20"]);
+  const atr=p0aFinite(row["ATR 14"]), rs=p0aFinite(row["rs_20"]);
+  if([close, sma, atr, rs].includes(P0A_UNSUPPORTED)) return P0A_UNSUPPORTED;
+  if(close===null || !(close>0) || sma===null || atr===null || atr<0) return true;
+  return (rs!==null)!==(state===P0A_STATE_VALID);
+}
+/* verify_artifact, step by step. Returns {ok, reason}. */
+async function p0aVerifyArtifact(artifact, rawText){
+  const fail=reason=>({ok:false, reason});
+  /* Python could not have read this text at all: nothing to compare with. */
+  if(!p0aPythonJsonText(rawText)) return fail("verifier_unsupported_input");
+  if(!p0aIsMapping(artifact)) return fail("artifact_not_object");
+  const run=p0aArtifactRunId(artifact);
+  const session=p0aSessionText(artifact.data_asof_session);
+  const evidence=artifact[P0A_ARTIFACT_FIELD];
+  if(evidence===null || evidence===undefined) return fail("evidence_missing");
+  if(!p0aIsMapping(evidence)) return fail("evidence_malformed");
+  if(evidence.contract_version!==P0A_CONTRACT_VERSION || evidence.stage!==P0A_STAGE) return fail("evidence_contract_unknown");
+  if(run===P0A_UNSUPPORTED) return fail("verifier_unsupported_input");
+  if(run===null || evidence.run_id!==run) return fail("evidence_run_mismatch");
+  if(session===null || evidence.data_asof_session!==session) return fail("evidence_session_mismatch");
+  const ranked=artifact.ordered_candidates;
+  if(!Array.isArray(ranked)) return fail("ranked_rows_unavailable");
+  if(evidence.ranked_rows!==ranked.length) return fail("evidence_binding_mismatch");
+  const binding=await p0aRankingBinding(ranked, run, session);
+  if(binding===P0A_UNAVAILABLE) return fail("verifier_unavailable");
+  if(binding===P0A_UNSUPPORTED) return fail("verifier_unsupported_input");
+  if(evidence.ranking_binding!==binding) return fail("evidence_binding_mismatch");
+  if(evidence.verdict!==P0A_VERDICT_PROVEN_VALID) return fail("evidence_not_proven");
+  const pool=evidence.pool;
+  const counts=p0aIsMapping(pool) ? pool.state_counts : null;
+  const benchmark=evidence.benchmark;
+  if(!(Array.isArray(evidence.reasons) && evidence.reasons.length===0)
+     || !p0aIsMapping(counts)
+     || !P0A_FAILING_POOL_STATES.every(state=>p0aFailingCountClear(counts, state))
+     || !p0aEvaluatedRowsOk(pool, rawText)
+     || !p0aIsMapping(benchmark)
+     || benchmark.state!==P0A_BENCHMARK_VALID
+     || !P0A_BENCHMARK_FACTS.every(fact=>benchmark[fact]===true)
+     || benchmark.bar_session!==session){
+    return fail("evidence_inconsistent");
+  }
+  for(const row of ranked){
+    const problem=p0aRankedRowProblem(row, session);
+    if(problem===P0A_UNSUPPORTED) return fail("verifier_unsupported_input");
+    if(problem) return fail("ranked_row_invalid");
+  }
+  return {ok:true, reason:"proven"};
+}
+async function verifyCandidateArtifact(artifact, rawText){
+  try{ return await p0aVerifyArtifact(artifact, rawText); }
+  catch(err){ return {ok:false, reason:"verifier_error"}; }
+}
+/* The gate's single entry: parse the exact text token by token, verify that
+   parse, and hand back that same payload to store and draw. Nothing parsed
+   elsewhere can be verified or shown in its place. */
+async function verifyCandidateArtifactText(rawText){
+  const parsed=p0aParseArtifactText(rawText);
+  if(!parsed.ok) return {ok:false, reason:parsed.reason};
+  const check=await verifyCandidateArtifact(parsed.payload, rawText);
+  return check.ok===true ? {ok:true, reason:check.reason, payload:parsed.payload} : check;
+}
+
+/* generated_at: the strict instant grammar of the acceptance module, with up
+   to six fractional digits (Python isoformat writes microseconds) and a
+   mandatory zone. Kept as exact integer microseconds: truncating to
+   milliseconds would turn an instant up to 999 µs in the future into "now"
+   and defeat the zero future tolerance. */
+const CANDIDATE_GENERATED_AT_INSTANT=/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,6}))?(?:Z|([+-])([0-9]{2}):([0-9]{2}))$/;
+const CANDIDATE_GENERATED_AT_NAIVE=/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,6}))?$/;
+function parseCandidateGeneratedAtUs(value){
+  if(!isExactString(value)) return null;
+  const m=CANDIDATE_GENERATED_AT_INSTANT.exec(value);
+  if(!m || !acceptanceCalendarFieldsOk(m)) return null;
+  if(m[8]!==undefined && (Number(m[9])>23 || Number(m[10])>59)) return null;
+  let offsetMinutes=0;
+  if(m[8]!==undefined){
+    offsetMinutes=Number(m[9])*60+Number(m[10]);
+    if(m[8]==="-") offsetMinutes=-offsetMinutes;
+  }
+  const micros=m[7]===undefined ? 0 : Number(m[7].padEnd(6, "0"));
+  const utcSecondsMs=Date.UTC(Number(m[1]), Number(m[2])-1, Number(m[3]),
+                              Number(m[4]), Number(m[5]), Number(m[6]), 0);
+  if(!Number.isFinite(utcSecondsMs)) return null;
+  const us=(utcSecondsMs-offsetMinutes*60000)*1000+micros;
+  return Number.isSafeInteger(us) ? us : null;
+}
+function candidateArtifactFreshness(generatedAt, nowMs){
+  if(!acceptanceClockOk(nowMs)) return {tier:CANDIDATE_VIEW.BLOCKED, reason:"evaluation_clock_invalid"};
+  if(generatedAt===undefined || generatedAt===null || generatedAt==="") return {tier:CANDIDATE_VIEW.BLOCKED, reason:"generated_at_missing"};
+  const generatedUs=parseCandidateGeneratedAtUs(generatedAt);
+  if(generatedUs===null){
+    const naive=isExactString(generatedAt) && CANDIDATE_GENERATED_AT_NAIVE.test(generatedAt);
+    return {tier:CANDIDATE_VIEW.BLOCKED, reason: naive ? "generated_at_not_aware" : "generated_at_invalid"};
+  }
+  const nowUs=nowMs*1000;
+  if(!Number.isSafeInteger(nowUs)) return {tier:CANDIDATE_VIEW.BLOCKED, reason:"evaluation_clock_invalid"};
+  const HOUR_US=3600000000;
+  const ageUs=nowUs-generatedUs;
+  const ageHours=ageUs/HOUR_US;
+  if(ageUs < -ACCEPTANCE_FUTURE_TOLERANCE_MS*1000) return {tier:CANDIDATE_VIEW.BLOCKED, reason:"generated_at_future", ageHours};
+  if(ageUs > CANDIDATE_ARTIFACT_STALE_HOURS*HOUR_US) return {tier:CANDIDATE_VIEW.BLOCKED, reason:"artifact_stale", ageHours};
+  if(ageUs >= CANDIDATE_ARTIFACT_FRESH_HOURS*HOUR_US) return {tier:CANDIDATE_VIEW.AGING, reason:"artifact_aging", ageHours};
+  return {tier:CANDIDATE_VIEW.FRESH, reason:"fresh", ageHours};
+}
+
+/* --- the store and the only readers of it ---------------------------------- */
+function resetCandidateStore(gate){
+  S.candidateRows=[];
+  S.rowBySymbol={};
+  S.artifactInfo={};
+  S.candidateGate=gate;
+}
+function storeVerifiedCandidates(seq, art){
+  /* verify_artifact proved ordered_candidates is the bound array, so
+     rowsFromArtifact returns exactly the verified rows, in order. */
+  const rows=rowsFromArtifact(art).map(row=>Object.assign({}, row));
+  const computed=attachComputedV3(rows);
+  const bySymbol={};
   for(const row of rows){
     const sym=normSymbol(row["Hisse"]||row["Kullanılan Güncel Sembol"]);
-    if(sym) S.rowBySymbol[sym]=row;
+    if(sym) bySymbol[sym]=row;
   }
-  S.artifactInfo = {
+  resetCandidateStore({seq, phase:CANDIDATE_GATE_PHASE.VERIFIED, reason:"proven", generatedAt:art.generated_at});
+  S.candidateRows=rows;
+  S.rowBySymbol=bySymbol;
+  S.artifactInfo={
     generated_at: art.generated_at || "",
     selected_at: art.selected_at || "",
     count: rows.length,
@@ -1453,7 +1937,174 @@ async function loadMarketData(){
     source: rows.length ? String(rows[0]["Selection Source"]||"") : "",
     computedV3: computed,
   };
+}
+/* Puts every candidate surface into a state that carries nothing from an
+   earlier verification: no table row, score, card or V3_LIVE badge. Uses
+   only element lookups and the gate's own labels, so it cannot fail on
+   price, bundle or financial data. */
+function clearCandidateSurfaces(){
+  const view=candidateView();
+  const table=document.getElementById("adayTable");
+  if(table) table.innerHTML="";
+  const pill=document.getElementById("adayMode");
+  if(pill){
+    pill.textContent=candidatePillLabel(view);
+    pill.classList.remove("hide");
+    pill.classList.toggle("warn", view.state!==CANDIDATE_VIEW.FRESH);
+  }
+  const meta=document.getElementById("adayMeta");
+  if(meta && view.state!==CANDIDATE_VIEW.FRESH && view.state!==CANDIDATE_VIEW.AGING){
+    meta.textContent=candidateBlockedText(view);
+  }
+  const out=document.getElementById("detailOut");
+  if(out){
+    const input=document.getElementById("detailSym");
+    const sym=normSymbol(input ? input.value : "");
+    out.innerHTML=sym ? `<div><b>${esc(sym)}</b></div>` : "";
+  }
+}
+/* Redraws every candidate surface from the store as it is now. Called after
+   each gate transition. The safe state comes first; each surface then draws
+   on its own, so a failure in price, bundle or financial drawing leaves that
+   surface reduced, never showing an earlier verification. */
+function renderCandidateSurfaces(){
+  try{ clearCandidateSurfaces(); }catch(err){ /* nothing drawn yet */ }
+  try{ loadAdaylar(); }catch(err){ /* the table stays empty */ }
+  try{
+    const changed=S.detailAutoFilled ? ensureDetailSymbol(true) : ensureDetailSymbol();
+    renderDetail(changed ? {} : {renderChart:false});
+  }catch(err){ /* the detail stays reduced to the symbol */ }
+}
+/* Loads, verifies and stores the candidate artifact. Never throws: the
+   outcome lives in S.candidateGate. Returns the read error (for the caller's
+   message) or null. The LOADING reset and its redraw happen synchronously,
+   before the first await. A newer load owns the store; an older one that
+   finishes later changes nothing. */
+async function loadCandidateArtifact(){
+  const seq=(Number(S.candidateLoadSeq)||0)+1;
+  S.candidateLoadSeq=seq;
+  resetCandidateStore({seq, phase:CANDIDATE_GATE_PHASE.LOADING, reason:"", generatedAt:null});
+  renderCandidateSurfaces();
+  let doc=null, readError=null;
+  try{ doc=await readJson("data/latest_core_candidates.json", {withText:true}); }
+  catch(err){ readError=err; }
+  if(seq!==S.candidateLoadSeq) return null;
+  if(readError || doc===null){
+    resetCandidateStore({seq, phase:CANDIDATE_GATE_PHASE.BLOCKED,
+      reason: readError ? "artifact_unreadable" : "artifact_missing", generatedAt:null});
+    renderCandidateSurfaces();
+    return readError;
+  }
+  const check=await verifyCandidateArtifactText(doc.text);
+  if(seq!==S.candidateLoadSeq) return null;
+  if(check.ok!==true){
+    resetCandidateStore({seq, phase:CANDIDATE_GATE_PHASE.BLOCKED,
+      reason: isExactString(check.reason) ? check.reason : "verification_unknown", generatedAt:null});
+    renderCandidateSurfaces();
+    return null;
+  }
+  try{ storeVerifiedCandidates(seq, check.payload); }
+  catch(err){
+    resetCandidateStore({seq, phase:CANDIDATE_GATE_PHASE.BLOCKED, reason:"verifier_error", generatedAt:null});
+  }
+  renderCandidateSurfaces();
+  return null;
+}
+/* The single presentation decision. Recomputed on every call. */
+function candidateView(nowMs){
+  const gate=S.candidateGate || {};
+  if(gate.phase===CANDIDATE_GATE_PHASE.LOADING) return {state:CANDIDATE_VIEW.LOADING, reason:"verification_pending"};
+  if(gate.phase!==CANDIDATE_GATE_PHASE.VERIFIED){
+    return {state:CANDIDATE_VIEW.BLOCKED, reason: isExactString(gate.reason) && gate.reason ? gate.reason : "verification_unknown"};
+  }
+  const fresh=candidateArtifactFreshness(gate.generatedAt, nowMs===undefined ? Date.now() : nowMs);
+  if(fresh.tier===CANDIDATE_VIEW.FRESH || fresh.tier===CANDIDATE_VIEW.AGING){
+    return {state:fresh.tier, reason:fresh.reason, ageHours:fresh.ageHours};
+  }
+  return {state:CANDIDATE_VIEW.BLOCKED, reason:fresh.reason, ageHours:fresh.ageHours};
+}
+function candidatesVisible(nowMs){
+  const state=candidateView(nowMs).state;
+  return state===CANDIDATE_VIEW.FRESH || state===CANDIDATE_VIEW.AGING;
+}
+function visibleCandidateRows(nowMs){
+  return candidatesVisible(nowMs) ? S.candidateRows : [];
+}
+function visibleCandidateRow(symbol, nowMs){
+  if(!candidatesVisible(nowMs)) return null;
+  const sym=normSymbol(symbol);
+  return Object.prototype.hasOwnProperty.call(S.rowBySymbol, sym) ? S.rowBySymbol[sym] : null;
+}
+function visibleCandidateSymbols(nowMs){
+  return candidatesVisible(nowMs) ? Object.keys(S.rowBySymbol) : [];
+}
+function visibleArtifactInfo(nowMs){
+  return candidatesVisible(nowMs) ? (S.artifactInfo || {}) : {};
+}
+const CANDIDATE_INTEGRITY_REASONS=new Set([
+  "artifact_not_object", "evidence_missing", "evidence_malformed", "evidence_contract_unknown",
+  "evidence_run_mismatch", "evidence_session_mismatch", "ranked_rows_unavailable",
+  "evidence_binding_mismatch", "evidence_not_proven", "evidence_inconsistent", "ranked_row_invalid",
+  "verifier_unsupported_input", "verifier_unavailable", "verifier_error", "verification_unknown",
+]);
+const CANDIDATE_REASON_TEXT={
+  evidence_not_proven: "Üretici kontrolü teknik bütünlüğü kanıtlayamadı (NOT_PROVEN).",
+  evidence_missing: "Artifact teknik bütünlük kanıtı taşımıyor.",
+  verifier_unavailable: "Bu tarayıcı doğrulama yapamıyor (Web Crypto yok).",
+  verifier_unsupported_input: "Kanıt bu arayüzün doğrulayabildiği biçimde değil.",
+  verifier_error: "Doğrulama tamamlanamadı.",
+  artifact_missing: "Aday artifact'i bulunamadı.",
+  artifact_unreadable: "Aday artifact'i okunamadı.",
+  generated_at_missing: "Artifact üretim zamanı yok.",
+  generated_at_invalid: "Artifact üretim zamanı okunamadı.",
+  generated_at_not_aware: "Artifact üretim zamanında saat dilimi yok.",
+  generated_at_future: "Artifact üretim zamanı cihaz saatinin ilerisinde.",
+  evaluation_clock_invalid: "Cihaz saati okunamadı.",
+};
+function candidateBlockedText(view){
+  if(view.state===CANDIDATE_VIEW.LOADING) return "Aday listesi doğrulanıyor…";
+  const reason=view.reason || "verification_unknown";
+  if(reason==="artifact_stale"){
+    return `Aday listesi gösterilmiyor: liste ${Math.round(view.ageHours)} saat önceki taramadan `
+      + `(${CANDIDATE_ARTIFACT_STALE_HOURS} saat sınırı aşıldı). [${reason}]`;
+  }
+  const title=CANDIDATE_INTEGRITY_REASONS.has(reason)
+    ? "Teknik veri bütünlüğü doğrulanamadı — aday listesi gösterilmiyor."
+    : "Aday listesi gösterilmiyor.";
+  const detail=CANDIDATE_REASON_TEXT[reason] || "Teknik bütünlük kanıtı doğrulanamadı.";
+  return `${title} ${detail} [${reason}]`;
+}
+function candidatePillLabel(view){
+  if(view===undefined) view=candidateView();
+  if(view.state===CANDIDATE_VIEW.AGING) return "ESKİ VERİ";
+  if(view.state===CANDIDATE_VIEW.LOADING) return "DOĞRULANIYOR";
+  if(view.state!==CANDIDATE_VIEW.FRESH) return "DOĞRULANAMADI";
+  return candidateModeLabel();
+}
+function candidateAgingNote(view){
+  return `⚠️ ESKİ VERİ: liste ${Math.round(view.ageHours)} saat önceki taramadan — güncellik azalmış olabilir`;
+}
+/* Detay'da aday kartı yokken neden gösterilmediği. Görünürken boş metin. */
+function candidateDetailGateNote(){
+  const view=candidateView();
+  if(view.state===CANDIDATE_VIEW.FRESH || view.state===CANDIDATE_VIEW.AGING) return "";
+  if(view.state===CANDIDATE_VIEW.LOADING) return "Aday listesi doğrulanıyor; aday kartları doğrulama tamamlanınca gösterilir.";
+  return "Aday kartları gösterilmiyor: günün aday listesi doğrulamadan geçmedi. Fiyat ve finansal bilgiler bağımsız kaynaklardan gelir.";
+}
+/* === P0A_ARTIFACT_GATE:END === */
+
+async function loadMarketData(){
+  // Bundle, current-price resolver'ın güvenilir EOD katmanıdır. Candidate
+  // artifact'i ve bundle paralel okunur; bundle yoksa resolver "Veri yok"a
+  // düşer, tarihsel seçim/tracking fiyatına dönmez. Aday kapısı ile fiyatlar
+  // aynı anda başlar: biri askıda kalırsa ya da hata verirse diğeri beklemez;
+  // aday kapısı kendi yüzeylerini, fiyatlar kendi yüzeylerini çizer.
+  ensureBundle().catch(()=>null);
+  const candidates=loadCandidateArtifact().then(readError=>{
+    if(readError) msg(readError.message,"err");
+  });
   await requestLatestPrices({force:true,allowHidden:true,preserveExisting:false});
+  await candidates;
 }
 function candidateModeLabel(){
   const info=S.artifactInfo || {};
@@ -1461,7 +2112,7 @@ function candidateModeLabel(){
   if(info.mode==="V2_LIVE" || info.source==="V2") return "V2_LIVE";
   if(info.mode==="LEGACY_LIVE" || info.source==="LEGACY") return "LEGACY_LIVE";
   if(info.computedV3) return "V3_UI_CALC";
-  if(S.candidateRows.some(r=>num(r["V3 Skor"])!==null)) return "V3_VIEW";
+  if(visibleCandidateRows().some(r=>num(r["V3 Skor"])!==null)) return "V3_VIEW";
   return info.mode || "";
 }
 function candidateSortBasis(){
@@ -1472,9 +2123,9 @@ function candidateSortBasis(){
   if(mode==="V2_LIVE" || source==="V2") return {rank:"V2 Sıra", score:"V2 Skor", label:"V2"};
   return {rank:"Legacy Sıra", score:"Karar Skoru", label:"legacy"};
 }
-function candidateRowsForDisplay(){
+function candidateRowsForDisplay(nowMs){
   const basis=candidateSortBasis();
-  return S.candidateRows.slice().sort((a,b)=>{
+  return visibleCandidateRows(nowMs).slice().sort((a,b)=>{
     const ar=num(a[basis.rank]), br=num(b[basis.rank]);
     if(ar!==null || br!==null) return (ar ?? 999999) - (br ?? 999999);
     const av3=num(a["V3 Sıra"]), bv3=num(b["V3 Sıra"]);
@@ -1492,17 +2143,33 @@ function candidateSelectionPrice(row){
 }
 function loadAdaylar(){
   const el=document.getElementById("adayTable"), meta=document.getElementById("adayMeta");
-  const rows=candidateRowsForDisplay();
-  const basis=candidateSortBasis();
-  const mode=candidateModeLabel();
   const pill=document.getElementById("adayMode");
+  // Önce güvenli durum: satır çizimi (fiyat/paket) yarıda kalsa da önceki
+  // tablo, örn. eski-veri bandına geçerken V3_LIVE listesi, ekranda kalmaz.
+  el.innerHTML="";
+  // Tek karar: P0A_ARTIFACT_GATE. Engellenmiş ya da henüz doğrulanmamış liste
+  // "aday yok" gibi sunulmaz; satır, sıra ve skor çizilmez.
+  const now=Date.now();
+  const view=candidateView(now);
+  if(view.state!==CANDIDATE_VIEW.FRESH && view.state!==CANDIDATE_VIEW.AGING){
+    pill.textContent=candidatePillLabel(view); pill.classList.remove("hide"); pill.classList.add("warn");
+    meta.textContent=candidateBlockedText(view); el.innerHTML="";
+    return;
+  }
+  const rows=candidateRowsForDisplay(now);
+  const basis=candidateSortBasis();
+  const mode=candidatePillLabel(view);
   pill.textContent=mode; pill.classList.toggle("hide", !mode);
-  pill.classList.toggle("warn", mode==="V3_UI_CALC" || mode==="V3_VIEW");
+  pill.classList.toggle("warn", mode==="V3_UI_CALC" || mode==="V3_VIEW" || view.state===CANDIDATE_VIEW.AGING);
   if(!rows.length){ meta.textContent="Aday bulunamadı."; el.innerHTML=""; return; }
-  const rawStamp=String(S.artifactInfo.generated_at||S.artifactInfo.selected_at||"");
+  const info=visibleArtifactInfo(now);
+  const rawStamp=String(info.generated_at||info.selected_at||"");
   const stamp=rawStamp?`${fmtDate(rawStamp)} ${rawStamp.slice(11,16)}`.trim():"";
-  const artifactMode=S.artifactInfo.mode ? ` | artifact: ${S.artifactInfo.mode}` : "";
-  meta.textContent = `üretim: ${stamp || "?"} | ${rows.length} aday | sıralama: ${basis.label}${artifactMode}`;
+  // Eski-veri bandında "artifact: V3_LIVE" güncel canlı liste izlenimi verir:
+  // yalnız taze listede gösterilir (sıralama temeli "sıralama: V3" ile kalır).
+  const aging=view.state===CANDIDATE_VIEW.AGING ? `${candidateAgingNote(view)} | ` : "";
+  const artifactMode=(info.mode && !aging) ? ` | artifact: ${info.mode}` : "";
+  meta.textContent = `${aging}üretim: ${stamp || "?"} | ${rows.length} aday | sıralama: ${basis.label}${artifactMode}`;
   let html = `<tr><th>#</th><th>Hisse</th><th>Şirket</th><th class=num>Fiyat</th><th class=num>Gün%</th><th class=num>${esc(basis.label)}</th></tr>`;
   rows.slice(0,15).forEach((r,i)=>{
     const sym=normSymbol(r["Hisse"]);
@@ -1512,7 +2179,7 @@ function loadAdaylar(){
       <td class=muted>${esc(String(r["Şirket Adı"]||"").slice(0,20))}</td>
       <td class=num data-src="${quote?esc(quote.source):''}">${quote?fmt(quote.price):"-"}${priceBadgeHtml(quote)}</td>
       <td class="num ${changeCellCls(chg)}">${fmtChangeCell(chg)}</td>
-      <td class=num>${fmt(r[basis.score] ?? r["V3 Skor"] ?? r["V2 Skor"] ?? r["Karar Skoru"],1)}</td></tr>`;
+      <td class=num>${fmtPresent(r[basis.score] ?? r["V3 Skor"] ?? r["V2 Skor"] ?? r["Karar Skoru"],1)}</td></tr>`;
   });
   el.innerHTML = html;
 }
@@ -2140,6 +2807,14 @@ function selectDetail(symbol){
   S.detailAutoFilled=false;
   show("detay");
 }
+/* The chart is its own surface: a malformed bundle must not end as an
+   unhandled rejection, and the chart status says what happened. */
+function renderDetailChart(sym){
+  Promise.resolve(MGB.render(sym)).catch(err=>{
+    const status=document.getElementById("mgbStatus");
+    if(status) status.textContent="Grafik çizilemedi: "+(err && err.message ? err.message : String(err));
+  });
+}
 function renderDetail(options={}){
   const out=document.getElementById("detailOut");
   if(!out) return;
@@ -2148,7 +2823,10 @@ function renderDetail(options={}){
   // ile tetiklenen render, temizlenen input'a sembolü geri basardı. (#290)
   let sym=normSymbol(document.getElementById("detailSym").value);
   if(!sym){ updateDetailHeading("", null); out.innerHTML='<div class="muted">Detay için sembol gir.</div>'; return; }
-  const row=S.rowBySymbol[sym];
+  // Önce güvenli durum: aşağıdaki çizim (fiyat, paket, finansal kartlar)
+  // yarıda kalsa da önceki aday kartı, skoru ya da rozeti burada kalmaz.
+  out.innerHTML=`<div><b>${esc(sym)}</b></div>`;
+  const row=visibleCandidateRow(sym);
   updateDetailHeading(sym, row);
   if(!row){
     // Aday-dışı sembol (BIST evreninden herhangi biri): karar/skor kartları
@@ -2157,16 +2835,17 @@ function renderDetail(options={}){
     // yalnız aday-dışı notu kalır ve Son Bilanço kendi missing-state'ini
     // gösterir (iki durum birbirine karıştırılmaz).
     const finCards=finSummaryCardsHtml(sym);
-    const note=finCards
+    // Liste engelliyken/doğrulanırken "aday değil" denemez: üyelik bilinmiyor.
+    const note=candidateDetailGateNote() || (finCards
       ? "Bu şirket güncel aday listesinde değil. Finansal bilgiler şirket veri paketinden gösterilmektedir."
-      : "Bu şirket güncel aday listesinde değil.";
+      : "Bu şirket güncel aday listesinde değil.");
     let basic=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, null))}</span></div>
       <div class="muted" style="margin:4px 0">${note}</div>`;
     const quote=currentQuoteFor(sym);
     const chg=dailyChangeFor(sym);
     const bundleBars=S.chartBundle && (S.chartBundle.bars||{})[sym];
     let changeSub="";
-    if(bundleBars && bundleBars.c.length>1){
+    if(bundleBars && Array.isArray(bundleBars.c) && bundleBars.c.length>1){
       const n=bundleBars.c.length, p20=bundleBars.c[Math.max(0,n-21)];
       if(p20) changeSub=`20g %${fmt((bundleBars.c[n-1]/p20-1)*100,1)}`;
     }
@@ -2178,7 +2857,7 @@ function renderDetail(options={}){
     const sectorLabel=finRow && (finRow.curated_subsector || finRow.sector);
     if(sectorLabel) basic+=`<div class="detail-grid">${renderDetailRow("Sektör", sectorLabel)}</div>`;
     out.innerHTML=basic;
-    if(options.renderChart!==false) MGB.render(sym);
+    if(options.renderChart!==false) renderDetailChart(sym);
     renderFin(sym);
     return;
   }
@@ -2186,13 +2865,13 @@ function renderDetail(options={}){
   const chg=dailyChangeFor(sym);
   const selectionPrice=candidateSelectionPrice(row);
   let html=`<div><b>${esc(sym)}</b> <span class="muted">${esc(companyNameFor(sym, row))}</span>
-    <span class="pill">${esc(candidateModeLabel())}</span></div>`;
+    <span class="pill">${esc(candidatePillLabel())}</span></div>`;
   html += `<div class="metric-grid">
     <div class="metric" data-src="${quote?esc(quote.source):''}"><div class="label">Fiyat</div><div class="value">${quote?fmt(quote.price):"-"}</div>${priceBadgeHtml(quote)}</div>
-    <div class="metric"><div class="label">Günlük %</div><div class="value ${changeCellCls(chg)}">${fmtChangeCell(chg)}</div><div class="muted">hafta %${fmt(row["Haftalık Değişim %"],1)}</div></div>
+    <div class="metric"><div class="label">Günlük %</div><div class="value ${changeCellCls(chg)}">${fmtChangeCell(chg)}</div><div class="muted">hafta %${fmtPresent(row["Haftalık Değişim %"],1)}</div></div>
     <div class="metric"><div class="label">Seçim fiyatı</div><div class="value">${selectionPrice!==null?fmt(selectionPrice):"-"}</div><div class="muted">tarihsel referans</div></div>
-    <div class="metric"><div class="label">V3 Sıra</div><div class="value">${fmtInt(row["V3 Sıra"])}</div><div class="muted">V2 sıra ${fmtInt(row["V2 Sıra"])}</div></div>
-    <div class="metric"><div class="label">V3 Skor</div><div class="value">${fmt(row["V3 Skor"],1)}</div><div class="muted">karar ${fmt(row["Karar Skoru"],0)}</div></div>
+    <div class="metric"><div class="label">V3 Sıra</div><div class="value">${fmtIntPresent(row["V3 Sıra"])}</div><div class="muted">V2 sıra ${fmtIntPresent(row["V2 Sıra"])}</div></div>
+    <div class="metric"><div class="label">V3 Skor</div><div class="value">${fmtPresent(row["V3 Skor"],1)}</div><div class="muted">karar ${fmtPresent(row["Karar Skoru"],0)}</div></div>
   </div>`;
   html += '<div class="detail-grid">';
   [
@@ -2202,11 +2881,11 @@ function renderDetail(options={}){
     ["Sektör", detailField(row,"Sektör")],
     ["Şirket sağlığı", detailField(row,"Şirket Sağlığı")],
     ["Değer analizi", valueClass(detailField(row,"Fiyatlama",""))],
-    ["Güven", `${detailField(row,"Güven Seviyesi")} (${fmt(row["Güven Puanı"],0)})`],
-    ["Kalite", `${fmt(row["Temel Kalite Skoru"],1)} - ${detailField(row,"Kalite Trendi")}`],
-    ["Değerleme", fmt(row["Değerleme Skoru"],1)],
-    ["Kırmızı bayrak", fmtInt(row["Kırmızı Bayrak Sayısı"])],
-    ["RS / RSI", `RS20 ${fmt(row["rs_20"],2)} | RSI ${fmt(row["RSI 14"],1)}`],
+    ["Güven", `${detailField(row,"Güven Seviyesi")} (${fmtPresent(row["Güven Puanı"],0)})`],
+    ["Kalite", `${fmtPresent(row["Temel Kalite Skoru"],1)} - ${detailField(row,"Kalite Trendi")}`],
+    ["Değerleme", fmtPresent(row["Değerleme Skoru"],1)],
+    ["Kırmızı bayrak", fmtIntPresent(row["Kırmızı Bayrak Sayısı"])],
+    ["RS / RSI", `RS20 ${fmtPresent(row["rs_20"],2)} | RSI ${fmtPresent(row["RSI 14"],1)}`],
     ["Hacim / MACD", `${detailField(row,"Hacim Sinyali")} | ${detailField(row,"MACD Sinyali")}`],
     ["Yakın hedef", detailField(row,"Yakın Hedef Bölgesi")],
     ["İzleme", `${detailField(row,"İzleme Penceresi")} | ${detailField(row,"2 Haftalık Potansiyel")}`],
@@ -2215,7 +2894,7 @@ function renderDetail(options={}){
   const note=detailField(row,"Kısa Vade Notu","");
   if(note) html += `<div class="detail-note">${esc(note)}</div>`;
   out.innerHTML=html;
-  if(options.renderChart!==false) MGB.render(sym);
+  if(options.renderChart!==false) renderDetailChart(sym);
   renderFin(sym);
 }
 
@@ -2440,7 +3119,7 @@ function renderWatchlist(){
   for(const sym of list){
     const quote=currentQuoteFor(sym);
     const chg=dailyChangeFor(sym);
-    const company=companyNameFor(sym, S.rowBySymbol[sym]||{});
+    const company=companyNameFor(sym, visibleCandidateRow(sym)||{});
     html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>`+
       `<td class="name-cell" title="${esc(company)}">${esc(company)||"—"}</td>`+
       `<td class=num data-src="${quote?esc(quote.source):''}">${quote?fmt(quote.price):"-"}${priceBadgeHtml(quote)}</td>`+
@@ -2491,7 +3170,7 @@ async function renderHisseler(){
   for(const sym of Object.keys(bars)){
     if(!isEquitySymbol(sym)) continue;  // Hisseler = yalnız hisse (PR #270)
     const sector=(fin[sym]&&fin[sym].sector)||"";
-    const candidate=S.rowBySymbol[sym] || {};
+    const candidate=visibleCandidateRow(sym) || {};
     const company=companyNameFor(sym, candidate);
     if(q && !sym.includes(q) && !sector.toUpperCase().includes(q) &&
        !company.toUpperCase().includes(q)) continue;
@@ -2664,17 +3343,16 @@ async function boot(){
   const pill=document.getElementById("profilePill");
   pill.textContent=slugify(S.profile); pill.classList.remove("hide");
   document.getElementById("headSub").textContent=S.repo;
+  // Aday kapısı, fiyatlar, Karne ve Portföy birbirini beklemez. Aday
+  // yüklemesi show()'dan ÖNCE başlar: önceki doğrulamanın tablosu/rozeti ilk
+  // await'ten önce silinir ve yerine "doğrulanıyor" çizilir.
+  const market=loadMarketData().catch(e=>msg(e.message,"err"));
   show("adaylar");
-  try{
-    await loadMarketData();
-    loadAdaylar();
-    loadKarne();
-    await loadPortfolio();
+  loadKarne();
+  const portfolio=loadPortfolio().then(()=>{
     ensureDetailSymbol();
     renderDetail();
-  }catch(e){
-    msg(e.message,"err");
-  }
+  }).catch(e=>msg(e.message,"err"));
   // Bundle yeniden erişilebilir hale gelirse bütün current-price yüzeyleri
   // aynı canonical kaynaktan tekrar çizilir; hata sessizce "Veri yok" kalır.
   ensureBundle().then(()=>{
@@ -2684,6 +3362,7 @@ async function boot(){
     renderPortfolio();
     renderHisseler();
   }).catch(()=>{});
+  await Promise.all([market, portfolio]);
 }
 applyFontSizePreference();  // kaydedilmiş yazı boyutunu ilk çizimden önce uygula
 window.addEventListener("focus", wakePriceRefresh);
