@@ -423,7 +423,7 @@
 /* Görünür build kimliği: commit hash'ine bağlı olmayan, monoton CalVer
    YYYY.MM.DD.ordinal. Her webapp release adayında ordinal artırılır; bu kimlik
    tek başına deploy/canlılık iddiası değildir. */
-const APP_BUILD_ID="2026.10.15.1";
+const APP_BUILD_ID="2026.10.18.1";
 function applyAppBuildId(){
   document.documentElement.dataset.appBuildId=APP_BUILD_ID;
   const el=document.getElementById("appBuildId");
@@ -1482,8 +1482,18 @@ function makeDefaultDetailSymbol(){
    Her kapı geçişinin hemen ardından aday yüzeyleri yeniden çizilir (LOADING
    ilk await'ten önce): DOM, deponun o anki kararının göstermeyeceği bir aday
    satırını, skoru ya da V3_LIVE rozetini hiçbir an taşımaz. Ham artifact
-   değiştirilmez; sıra, skor ve seçim burada yeniden hesaplanmaz. */
-const P0A_CONTRACT_VERSION="P0A_TECHNICAL_INTEGRITY_V1";
+   değiştirilmez; sıra, skor ve seçim burada yeniden hesaplanmaz.
+
+   Sözleşme V2 (F1-B, 2026-10-18): değerlendirilen havuzda en fazla
+   P0A_MAX_LAGGED_ROWS satır LAGGED olabilir (geçici güvenlik tavanı; kalibre
+   eşik ya da güncellik kanıtı değildir), stale-cache fallback satırı
+   (PRICE_STALE_CACHE_FALLBACK) ve taze fiyat kökeni kanıtlanmamış benchmark
+   havuzu düşürür. Bu taraf havuz sayılarını (session_relation_counts,
+   evaluated_rows, lagged_symbols) Python ile aynı aritmetikle yeniden kontrol
+   eder ve "Veri Güncel Değil" alanı false dışında bir değer taşıyan sıralı
+   satırı reddeder. V1 kanıtı tanınmaz (evidence_contract_unknown); eski V1
+   kabuğu da V2 kanıtını tanımaz: sürüm geçişi her iki yönde fail-closed. */
+const P0A_CONTRACT_VERSION="P0A_TECHNICAL_INTEGRITY_V2";
 const P0A_STAGE="SCAN_PRE_SELECTION";
 const P0A_ARTIFACT_FIELD="technical_integrity";
 const P0A_ROW_STATE_FIELD="technical_integrity_state";
@@ -1494,9 +1504,13 @@ const P0A_STATE_VALID="VALID";
 const P0A_ACCEPTED_POOL_STATES=["VALID","RS_SHORT_HISTORY_PROVEN"];
 /* ROW_STATES - ACCEPTED_POOL_STATES - EXCLUDED_BY_EXISTING_CONTRACT */
 const P0A_FAILING_POOL_STATES=["BENCHMARK_INPUT_INVALID","PRICE_BAR_INCOMPLETE","SCAN_ERROR",
-  "TECHNICAL_INPUT_INVALID","VALIDATION_UNDETERMINABLE"];
+  "TECHNICAL_INPUT_INVALID","VALIDATION_UNDETERMINABLE","PRICE_STALE_CACHE_FALLBACK"];
 const P0A_RANKED_TECHNICAL_FIELDS=["Kapanış","SMA 20","ATR 14","rs_20"];
-const P0A_BENCHMARK_FACTS=["close_valid","regime_window_valid","regime_sma_valid"];
+const P0A_BENCHMARK_FACTS=["close_valid","regime_window_valid","regime_sma_valid","price_provenance_fresh"];
+/* technical_integrity.MAX_LAGGED_ROWS / STALE_ROW_FLAG_FIELD */
+const P0A_MAX_LAGGED_ROWS=5;
+const P0A_STALE_ROW_FLAG_FIELD="Veri Güncel Değil";
+const P0A_SESSION_RELATIONS=["CURRENT","LAGGED","AFTER_DATA_SESSION","UNKNOWN"];
 const CANDIDATE_ARTIFACT_FRESH_HOURS=24;
 const CANDIDATE_ARTIFACT_STALE_HOURS=80;
 const CANDIDATE_GATE_PHASE={LOADING:"LOADING", VERIFIED:"VERIFIED", BLOCKED:"BLOCKED"};
@@ -1796,6 +1810,43 @@ function p0aEvaluatedRowsOk(pool, rawText){
   const literal=p0aEvaluatedRowsLiteral(rawText);
   return literal!==null && /^(?:0|[1-9][0-9]*)$/.test(literal);
 }
+/* The literal text of the member at `path` (object keys from the top of the
+   verified text, last duplicate wins as in both parsers), or null. */
+function p0aLiteralAt(rawText, path){
+  let span=[0, rawText.length];
+  for(const key of path){
+    span=p0aJsonMember(rawText, span[0], key);
+    if(!span) return null;
+  }
+  return rawText.slice(span[0], span[1]);
+}
+/* Python _count: an int (not a bool, not a float) in [0, 2**53-1]. JSON.parse
+   reads 5 and 5.0 alike, so the literal on its own path must be an integer. */
+function p0aCount(value, rawText, path){
+  if(typeof value!=="number" || !Number.isSafeInteger(value) || value<0 || !isExactString(rawText)) return null;
+  const literal=p0aLiteralAt(rawText, path);
+  return literal!==null && /^(?:0|[1-9][0-9]*)$/.test(literal) ? value : null;
+}
+/* Python _pool_lag_consistent. */
+function p0aPoolLagConsistent(pool, laggedSymbols, rawText){
+  const relations=pool.session_relation_counts;
+  if(!p0aIsMapping(relations)) return false;
+  const values=P0A_SESSION_RELATIONS.map(name=>p0aCount(relations[name], rawText,
+    [P0A_ARTIFACT_FIELD, "pool", "session_relation_counts", name]));
+  const evaluated=p0aCount(pool.evaluated_rows, rawText, [P0A_ARTIFACT_FIELD, "pool", "evaluated_rows"]);
+  if(values.includes(null) || evaluated===null) return false;
+  const [current, lagged, after, unknown]=values;
+  if(after!==0 || unknown!==0 || lagged>P0A_MAX_LAGGED_ROWS || current+lagged!==evaluated) return false;
+  return Array.isArray(laggedSymbols) && laggedSymbols.length===lagged
+    && laggedSymbols.every(symbol=>isExactString(symbol) && symbol!=="")
+    && new Set(laggedSymbols).size===lagged;
+}
+/* Python _stale_flag_set: present and anything but false. A null here may be
+   a NaN that parseJsonText rewrote; Python reads both null and NaN as set. */
+function p0aStaleFlagSet(row){
+  return Object.prototype.hasOwnProperty.call(row, P0A_STALE_ROW_FLAG_FIELD)
+    && row[P0A_STALE_ROW_FLAG_FIELD]!==false;
+}
 /* Python _ranked_row_problem. */
 function p0aRankedRowProblem(row, session){
   if(!p0aIsMapping(row)) return true;
@@ -1803,6 +1854,7 @@ function p0aRankedRowProblem(row, session){
   if(!P0A_ACCEPTED_POOL_STATES.includes(state)) return true;
   const relation=p0aSessionRelation(row[P0A_ROW_BAR_SESSION_FIELD], session);
   if(relation!=="CURRENT" && relation!=="LAGGED") return true;
+  if(p0aStaleFlagSet(row)) return true;
   const close=p0aFinite(row["Kapanış"]), sma=p0aFinite(row["SMA 20"]);
   const atr=p0aFinite(row["ATR 14"]), rs=p0aFinite(row["rs_20"]);
   if([close, sma, atr, rs].includes(P0A_UNSUPPORTED)) return P0A_UNSUPPORTED;
@@ -1839,6 +1891,7 @@ async function p0aVerifyArtifact(artifact, rawText){
      || !p0aIsMapping(counts)
      || !P0A_FAILING_POOL_STATES.every(state=>p0aFailingCountClear(counts, state))
      || !p0aEvaluatedRowsOk(pool, rawText)
+     || !p0aPoolLagConsistent(pool, evidence.lagged_symbols, rawText)
      || !p0aIsMapping(benchmark)
      || benchmark.state!==P0A_BENCHMARK_VALID
      || !P0A_BENCHMARK_FACTS.every(fact=>benchmark[fact]===true)
@@ -1850,6 +1903,8 @@ async function p0aVerifyArtifact(artifact, rawText){
     if(problem===P0A_UNSUPPORTED) return fail("verifier_unsupported_input");
     if(problem) return fail("ranked_row_invalid");
   }
+  const rankedLagged=ranked.filter(row=>p0aSessionRelation(row[P0A_ROW_BAR_SESSION_FIELD], session)==="LAGGED").length;
+  if(rankedLagged>pool.session_relation_counts.LAGGED) return fail("evidence_inconsistent");
   return {ok:true, reason:"proven"};
 }
 async function verifyCandidateArtifact(artifact, rawText){
