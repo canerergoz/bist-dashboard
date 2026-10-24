@@ -102,6 +102,9 @@
   .msg{padding:8px 10px;border-radius:8px;font-size:calc(12px * var(--fs));margin-bottom:10px;display:none;}
   .msg.ok{background:#e7f3ea;color:var(--pos);display:block;}
   .msg.err{background:#f7e9e9;color:var(--neg);display:block;}
+  .access-help{padding:8px 10px;border-radius:8px;font-size:calc(12px * var(--fs));
+    margin-bottom:10px;background:#fff5dc;color:var(--warn);}
+  .access-help .btn{margin-left:8px;margin-top:4px;}
   .disclaimer{font-size:calc(10px * var(--fs));color:var(--sub);text-align:center;padding:10px 16px 18px;}
   .version-note{margin-top:4px;font-size:calc(10px * var(--fs));color:var(--sub);}
   .stale-banner{display:block;margin:8px 12px 0;padding:8px 10px;border:1px solid var(--warn);
@@ -257,6 +260,9 @@
        kalıntısı algılanırsa görünür. Data/scoring davranışı değiştirmez. -->
   <div id="staleUiBanner" class="stale-banner hide"></div>
   <div id="msg" class="msg"></div>
+  <!-- Okuma hatası açıklaması: yalnız erişim / bağlantı / dosya hatasında
+       görünür; teknik bütünlük (NOT_PROVEN) burada gösterilmez. -->
+  <div id="accessHelp" class="access-help hide" role="status"></div>
 
   <section id="view-setup">
     <div class="card">
@@ -423,7 +429,7 @@
 /* Görünür build kimliği: commit hash'ine bağlı olmayan, monoton CalVer
    YYYY.MM.DD.ordinal. Her webapp release adayında ordinal artırılır; bu kimlik
    tek başına deploy/canlılık iddiası değildir. */
-const APP_BUILD_ID="2026.10.18.1";
+const APP_BUILD_ID="2026.10.24.1";
 function applyAppBuildId(){
   document.documentElement.dataset.appBuildId=APP_BUILD_ID;
   const el=document.getElementById("appBuildId");
@@ -502,6 +508,9 @@ const S = {
   candidateGate: {seq: 0, phase: "LOADING", reason: "", generatedAt: null},
   candidateLoadSeq: 0,
   positions: [],
+  /* Kendi portföy dosyasının okuma durumu: LOADING / OK / ERROR. OK olmadan
+     portföy yazılmaz; okunamayan bir portföy "boş" sanılıp üzerine yazılmaz. */
+  portfolioLoad: {state: "LOADING", text: ""},
   editingPos: null,   // kendi portföyünde düzenlenen satır indeksi (yoksa null)
   relatedPortfolios: [],
   artifactInfo: {},
@@ -546,7 +555,7 @@ function normalizeRepo(value){
 function githubContentsUrl(path){
   const repo=normalizeRepo(S.repo);
   if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)){
-    throw new Error("Repo alanı 'sahip/repo' formatında olmalı. Örn: canerergoz/assistant");
+    throw readFailure("config", "Repo alanı 'sahip/repo' formatında olmalı. Örn: canerergoz/assistant");
   }
   const safePath=String(path).split("/").map(encodeURIComponent).join("/");
   return `https://api.github.com/repos/${repo}/contents/${safePath}`;
@@ -601,6 +610,63 @@ function apiHeaders(extra){
     "X-GitHub-Api-Version": "2022-11-28",
   }, extra||{});
 }
+/* Okuma hatasının türü (yalnız GÖRÜNTÜLEME). Erişim, ağ ve geçici GitHub
+   hataları teknik bütünlük kararından ayrı anlatılır. Aday kapısı bu türü
+   karar için okumaz; yalnız kullanıcıya gösterilen metni seçer. */
+const READ_FAILURE_TEXT={
+  auth: "GitHub erişimi reddedildi: token geçersiz, süresi dolmuş ya da bu repoya okuma izni yok.",
+  rate_limited: "GitHub istek sınırına ulaşıldı; biraz sonra Yenile'ye bas.",
+  not_found: "Dosya bulunamadı: repo adı yanlış olabilir ya da token bu repoya erişemiyor.",
+  server: "GitHub şu an yanıt vermiyor (geçici hata); biraz sonra Yenile'ye bas.",
+  http: "GitHub isteği başarısız oldu.",
+  network: "Ağ bağlantısı kurulamadı: cihaz çevrimdışı olabilir ya da GitHub'a ulaşılamıyor.",
+  parse: "Dosya okunabilir JSON değil.",
+  config: "Kurulum bilgisi geçersiz: repo 'sahip/repo' biçiminde olmalı.",
+};
+const READ_FAILURE_SETUP_KINDS=new Set(["auth","not_found","config"]);
+function readFailure(kind, message, status){
+  const err=new Error(message);
+  err.readKind=kind;
+  if(status!==undefined) err.status=status;
+  return err;
+}
+function readFailureKind(err){
+  return err && Object.prototype.hasOwnProperty.call(READ_FAILURE_TEXT, err.readKind)
+    ? err.readKind : "unknown";
+}
+function readFailureText(err){
+  const kind=readFailureKind(err);
+  if(kind==="unknown") return String((err && err.message) || err || "bilinmeyen hata");
+  const status=Number.isInteger(err.status) ? ` (HTTP ${err.status})` : "";
+  return READ_FAILURE_TEXT[kind]+status;
+}
+/* Kurulum ekranına dönüş: token reddedildiğinde ya da repo bulunamadığında
+   yeni token arayüzden girilebilsin. Kayıtlı değerler alanlara doldurulur;
+   hiçbir şey silinmez, Kaydet ve Bağlan yeniden yükler. */
+function openSetup(){
+  document.getElementById("inToken").value=S.token||"";
+  document.getElementById("inRepo").value=S.repo||"";
+  document.getElementById("inProfile").value=S.profile||"";
+  document.getElementById("inRelated").value=S.relatedProfiles||"";
+  show("setup");
+}
+/* Bir okuma hatasını sayfanın üstünde anlaşılır biçimde ve çözüm yoluyla
+   gösterir. Erişim/kurulum hatasında "Kurulumu aç", geçici hatada "Yenile". */
+function noteReadFailure(err){
+  const el=document.getElementById("accessHelp");
+  if(!el) return;
+  const setup=READ_FAILURE_SETUP_KINDS.has(readFailureKind(err));
+  el.innerHTML=`${esc(readFailureText(err))} `+(setup
+    ? '<button class="btn small" type="button" onclick="openSetup()">Kurulumu aç</button>'
+    : '<button class="btn small gray" type="button" onclick="refreshApp()">Yenile</button>');
+  el.classList.remove("hide");
+}
+function clearReadFailureNote(){
+  const el=document.getElementById("accessHelp");
+  if(!el) return;
+  el.innerHTML="";
+  el.classList.add("hide");
+}
 function parseJsonText(text, path){
   try { return JSON.parse(text); }
   catch(err){
@@ -618,17 +684,27 @@ async function readJson(path, options={}){
     url.searchParams.set("_cb", String(options.cacheBustKey||Date.now()));
     request.cache="no-store";
   }
-  const r = await fetch(url.toString(), request);
+  let r;
+  try{ r = await fetch(url.toString(), request); }
+  catch(err){
+    throw readFailure("network", `Ağ bağlantısı kurulamadı: ${(err && err.message) || err}`);
+  }
   if (r.status === 404) return null;
-  if (r.status === 401 || r.status === 403) throw new Error("Token reddedildi (yetki/expiry kontrol et).");
-  if (!r.ok) throw new Error("Okuma hatası: HTTP " + r.status);
+  const rateLimited = r.status === 429 || (r.status === 403 && r.headers
+    && typeof r.headers.get === "function" && r.headers.get("x-ratelimit-remaining") === "0");
+  if (rateLimited) throw readFailure("rate_limited", "GitHub istek sınırı doldu: HTTP " + r.status, r.status);
+  if (r.status === 401 || r.status === 403) throw readFailure("auth", "Token reddedildi (yetki/expiry kontrol et).", r.status);
+  if (!r.ok) throw readFailure(r.status >= 500 ? "server" : "http", "Okuma hatası: HTTP " + r.status, r.status);
   if(options.withText){
     // The candidate gate parses the exact text itself, token by token (see
     // P0A_ARTIFACT_GATE): parseJsonText's NaN rewrite does not know where a
     // JSON string starts or ends and can change string content.
     return {text: await r.text()};
   }
-  return parseJsonText(await r.text(), path);
+  // A TypeError here is the body stream failing (network); anything else is
+  // content that does not parse.
+  try{ return parseJsonText(await r.text(), path); }
+  catch(err){ throw readFailure(err instanceof TypeError ? "network" : "parse", err.message); }
 }
 async function fileSha(path){
   const r = await fetch(githubContentsUrl(path),
@@ -2045,8 +2121,11 @@ async function loadCandidateArtifact(){
   catch(err){ readError=err; }
   if(seq!==S.candidateLoadSeq) return null;
   if(readError || doc===null){
+    /* access: why the read failed (display only). The list stays blocked
+       either way; only the label and the explanation differ. */
     resetCandidateStore({seq, phase:CANDIDATE_GATE_PHASE.BLOCKED,
-      reason: readError ? "artifact_unreadable" : "artifact_missing", generatedAt:null});
+      reason: readError ? "artifact_unreadable" : "artifact_missing", generatedAt:null,
+      access: readError ? readFailureKind(readError) : "not_found"});
     renderCandidateSurfaces();
     return readError;
   }
@@ -2070,7 +2149,8 @@ function candidateView(nowMs){
   const gate=S.candidateGate || {};
   if(gate.phase===CANDIDATE_GATE_PHASE.LOADING) return {state:CANDIDATE_VIEW.LOADING, reason:"verification_pending"};
   if(gate.phase!==CANDIDATE_GATE_PHASE.VERIFIED){
-    return {state:CANDIDATE_VIEW.BLOCKED, reason: isExactString(gate.reason) && gate.reason ? gate.reason : "verification_unknown"};
+    return {state:CANDIDATE_VIEW.BLOCKED, reason: isExactString(gate.reason) && gate.reason ? gate.reason : "verification_unknown",
+            access: isExactString(gate.access) ? gate.access : ""};
   }
   const fresh=candidateArtifactFreshness(gate.generatedAt, nowMs===undefined ? Date.now() : nowMs);
   if(fresh.tier===CANDIDATE_VIEW.FRESH || fresh.tier===CANDIDATE_VIEW.AGING){
@@ -2116,9 +2196,20 @@ const CANDIDATE_REASON_TEXT={
   generated_at_future: "Artifact üretim zamanı cihaz saatinin ilerisinde.",
   evaluation_clock_invalid: "Cihaz saati okunamadı.",
 };
+/* Pill per blocked cause. Integrity failures keep DOĞRULANAMADI; a read
+   failure says it is an access or connection problem, not a verdict. */
+const CANDIDATE_ACCESS_PILL={
+  auth:"ERİŞİM HATASI", not_found:"ERİŞİM HATASI", config:"ERİŞİM HATASI",
+  network:"BAĞLANTI HATASI", server:"BAĞLANTI HATASI", rate_limited:"BAĞLANTI HATASI",
+};
 function candidateBlockedText(view){
   if(view.state===CANDIDATE_VIEW.LOADING) return "Aday listesi doğrulanıyor…";
   const reason=view.reason || "verification_unknown";
+  if(view.access){
+    const cause=READ_FAILURE_TEXT[view.access] || "Dosya okunamadı.";
+    return "Aday listesi okunamadı — bu bir erişim ya da bağlantı sorunu, teknik bütünlük kararı değil. "
+      + `${cause} [${reason}]`;
+  }
   if(reason==="artifact_stale"){
     return `Aday listesi gösterilmiyor: liste ${Math.round(view.ageHours)} saat önceki taramadan `
       + `(${CANDIDATE_ARTIFACT_STALE_HOURS} saat sınırı aşıldı). [${reason}]`;
@@ -2127,13 +2218,20 @@ function candidateBlockedText(view){
     ? "Teknik veri bütünlüğü doğrulanamadı — aday listesi gösterilmiyor."
     : "Aday listesi gösterilmiyor.";
   const detail=CANDIDATE_REASON_TEXT[reason] || "Teknik bütünlük kanıtı doğrulanamadı.";
-  return `${title} ${detail} [${reason}]`;
+  const scope=CANDIDATE_INTEGRITY_REASONS.has(reason)
+    ? " Bu bir bağlantı sorunu değil. Bu kapı yalnız aday listesini gizler; Hisseler, Karne ve Portföy açık kalır."
+      + " Oradaki fiyatların kendi tarih ve veri kalitesi sınırları vardır." : "";
+  return `${title} ${detail}${scope} [${reason}]`;
 }
 function candidatePillLabel(view){
   if(view===undefined) view=candidateView();
   if(view.state===CANDIDATE_VIEW.AGING) return "ESKİ VERİ";
   if(view.state===CANDIDATE_VIEW.LOADING) return "DOĞRULANIYOR";
-  if(view.state!==CANDIDATE_VIEW.FRESH) return "DOĞRULANAMADI";
+  if(view.state!==CANDIDATE_VIEW.FRESH){
+    if(view.access) return CANDIDATE_ACCESS_PILL[view.access] || "OKUNAMADI";
+    if(view.reason==="artifact_stale") return "GÜNCEL DEĞİL";
+    return "DOĞRULANAMADI";
+  }
   return candidateModeLabel();
 }
 function candidateAgingNote(view){
@@ -2144,6 +2242,7 @@ function candidateDetailGateNote(){
   const view=candidateView();
   if(view.state===CANDIDATE_VIEW.FRESH || view.state===CANDIDATE_VIEW.AGING) return "";
   if(view.state===CANDIDATE_VIEW.LOADING) return "Aday listesi doğrulanıyor; aday kartları doğrulama tamamlanınca gösterilir.";
+  if(view.access) return "Aday kartları gösterilmiyor: aday listesi okunamadı (erişim ya da bağlantı sorunu).";
   return "Aday kartları gösterilmiyor: günün aday listesi doğrulamadan geçmedi. Fiyat ve finansal bilgiler bağımsız kaynaklardan gelir.";
 }
 /* === P0A_ARTIFACT_GATE:END === */
@@ -2156,7 +2255,9 @@ async function loadMarketData(){
   // aday kapısı kendi yüzeylerini, fiyatlar kendi yüzeylerini çizer.
   ensureBundle().catch(()=>null);
   const candidates=loadCandidateArtifact().then(readError=>{
-    if(readError) msg(readError.message,"err");
+    if(readError){ msg(readError.message,"err"); noteReadFailure(readError); }
+    else if(candidateView().reason==="artifact_missing")
+      noteReadFailure(readFailure("not_found", "Aday dosyası bulunamadı.", 404));
   });
   await requestLatestPrices({force:true,allowHidden:true,preserveExisting:false});
   await candidates;
@@ -2308,7 +2409,11 @@ async function loadKarne(){
         <td class=num>%${fmt(k.relative_win_rate_pct,1)}</td></tr>`;
     }
     document.getElementById("karneTable").innerHTML = html;
-  }catch(e){ meta.textContent=""; msg(e.message,"err"); }
+  }catch(e){
+    meta.textContent=`Karne okunamadı: ${readFailureText(e)}`;
+    msg(e.message,"err");
+    noteReadFailure(e);
+  }
 }
 
 function pfPath(slug){ return `webapp/portfolios/${slugify(slug||S.profile)}.json`; }
@@ -2377,6 +2482,7 @@ function renderPortfolioTable(positions, editable){
 function editPosition(i){ S.editingPos=i; renderPortfolio(); }
 function cancelEditPosition(){ S.editingPos=null; renderPortfolio(); }
 function saveEditPosition(i){
+  if(!portfolioWritable()) return;
   const sym=normSymbol(document.getElementById("pfEditSym").value);
   // num() ile parse: virgül/nokta güvenli, maliyet hassasiyeti korunur. (#290)
   const qty=num(document.getElementById("pfEditQty").value);
@@ -2405,15 +2511,34 @@ function renderPortfolioGroup(title, positions, editable){
     ${renderPortfolioTable(positions, editable)}
   </div>`;
 }
+/* Okunamayan ya da henüz yüklenmeyen portföy "boş portföy" gibi çizilmez. */
+function renderPortfolioStatus(title, text, failed){
+  return `<div class="portfolio-block">
+    <div class="portfolio-head"><h3>${esc(title)}</h3></div>
+    <div class="${failed ? "msg err" : "muted"}">${esc(text)}</div>
+  </div>`;
+}
+function portfolioWritable(){
+  if((S.portfolioLoad || {}).state==="OK") return true;
+  msg("Portföy okunamadığı için değişiklik kaydedilmedi. Yenile ile tekrar dene.","err");
+  return false;
+}
 function renderPortfolio(){
   const wrap=document.getElementById("pfWrap");
   const own=slugify(S.profile);
   const activeTitle=`${own} portföyü`;
-  let html=renderPortfolioGroup(activeTitle, S.positions, true);
+  const load=S.portfolioLoad || {state:"LOADING", text:""};
+  let html;
+  if(load.state==="OK") html=renderPortfolioGroup(activeTitle, S.positions, true);
+  else if(load.state==="ERROR") html=renderPortfolioStatus(activeTitle,
+    `Portföy okunamadı: ${load.text} Pozisyonlar gösterilmiyor; bu durumda ekleme ve düzenleme kaydedilmez. Yenile ile tekrar dene.`, true);
+  else html=renderPortfolioStatus(activeTitle, "Portföy yükleniyor…", false);
   for(const item of S.relatedPortfolios){
-    html += renderPortfolioGroup(`${item.slug} portföyü`, item.positions, false);
+    html += item.error
+      ? renderPortfolioStatus(`${item.slug} portföyü`, `Okunamadı: ${item.error}`, true)
+      : renderPortfolioGroup(`${item.slug} portföyü`, item.positions, false);
   }
-  if(!S.relatedPortfolios.length && parseRelatedProfiles(S.relatedProfiles).length){
+  if(load.state==="OK" && !S.relatedPortfolios.length && parseRelatedProfiles(S.relatedProfiles).length){
     html += `<div class="portfolio-block"><div class="muted">İzlenen profil dosyası henüz yok.</div></div>`;
   }
   wrap.innerHTML=html;
@@ -2422,18 +2547,69 @@ function renderPortfolio(){
   if(heading) heading.textContent=`Kendi Portföyüme Hisse Ekle (${own})`;
   updatePriceHint();
 }
+/* Portföy dosyasının kullanılabilir biçimi: {positions: [nesne, …]}.
+   Yalnız HTTP 404 (dosya yok) yeni profildir: boş liste, ilk kayıt dosyayı
+   oluşturur (mevcut davranış). Var olan ama bu biçimde olmayan bir dosya,
+   içeriği `null` olsa bile, boş sayılmaz: portföy ERROR olur ve yazılmaz. */
+const PORTFOLIO_SHAPE_TEXT="Portföy dosyası beklenen biçimde değil ({positions: [...]} okunamadı).";
+/* 404'ü, içeriği JSON null olan mevcut dosyadan ayırır: readJson ikisinde de
+   null döndürür, withText ise yalnız 404'te null döndürür. */
+async function readPortfolioFile(slug){
+  const path=pfPath(slug);
+  const doc=await readJson(path, {withText:true});
+  if(doc===null) return {missing:true, data:null};
+  try{ return {missing:false, data:parseJsonText(doc.text, path)}; }
+  catch(err){ throw readFailure("parse", err.message); }
+}
+function portfolioPositions(file){
+  if(file.missing) return [];
+  const data=file.data;
+  if(!data || typeof data!=="object" || Array.isArray(data)) return null;
+  if(!Array.isArray(data.positions)) return null;
+  for(const position of data.positions){
+    if(!position || typeof position!=="object" || Array.isArray(position)) return null;
+  }
+  return data.positions;
+}
+function failPortfolioLoad(text){
+  // Okunamayan portföy boş sayılmaz: pozisyonlar gizlenir, yazma kapalı kalır.
+  S.positions = [];
+  S.editingPos = null;
+  S.relatedPortfolios = [];
+  S.portfolioLoad = {state:"ERROR", text};
+  renderPortfolio();
+}
 async function loadPortfolio(){
-  try{
-    const data = await readJson(pfPath(S.profile));
-    S.positions = (data && Array.isArray(data.positions)) ? data.positions : [];
-    S.editingPos = null;   // yeniden yüklemede eski düzenleme indeksi bayat olmasın
-    S.relatedPortfolios = [];
-    for(const slug of parseRelatedProfiles(S.relatedProfiles)){
-      const rel = await readJson(pfPath(slug));
-      S.relatedPortfolios.push({slug, positions:(rel && Array.isArray(rel.positions)) ? rel.positions : []});
+  S.portfolioLoad = {state:"LOADING", text:""};
+  let file;
+  try{ file = await readPortfolioFile(S.profile); }
+  catch(e){
+    failPortfolioLoad(readFailureText(e));
+    msg(e.message,"err");
+    noteReadFailure(e);
+    return;
+  }
+  const positions = portfolioPositions(file);
+  if(positions===null){
+    failPortfolioLoad(PORTFOLIO_SHAPE_TEXT);
+    msg("Portföy dosyası beklenen biçimde değil; değişiklik kaydedilmez.","err");
+    return;
+  }
+  S.positions = positions;
+  S.editingPos = null;   // yeniden yüklemede eski düzenleme indeksi bayat olmasın
+  S.relatedPortfolios = [];
+  S.portfolioLoad = {state:"OK", text:""};
+  for(const slug of parseRelatedProfiles(S.relatedProfiles)){
+    // İzlenen bir profilin hatası kendi portföyünü ve diğerlerini boşaltmaz.
+    try{
+      const relPositions = portfolioPositions(await readPortfolioFile(slug));
+      if(relPositions===null) S.relatedPortfolios.push({slug, positions:[], error:PORTFOLIO_SHAPE_TEXT});
+      else S.relatedPortfolios.push({slug, positions:relPositions});
+    }catch(e){
+      S.relatedPortfolios.push({slug, positions:[], error:readFailureText(e)});
     }
-    renderPortfolio();
-  }catch(e){ msg(e.message,"err"); }
+  }
+  renderPortfolio();
 }
 function updatePriceHint(){
   const el=document.getElementById("pfPriceHint");
@@ -2448,6 +2624,7 @@ function updatePriceHint(){
     : `${esc(sym)} için repo verisinde fiyat bulunamadı.${priceBadgeHtml(null)}`;
 }
 function addPosition(){
+  if(!portfolioWritable()) return;
   const sym=normSymbol(document.getElementById("pfSym").value);
   // num() ile parse: virgül/nokta ondalık ayırıcı ve TR binlik güvenli;
   // maliyet hassasiyeti (örn. 3,697) yuvarlanmadan number'a çevrilir. (#290)
@@ -2462,8 +2639,12 @@ function addPosition(){
   renderPortfolio();
   savePortfolio();  // tek akış (2026-07-04): her değişiklik anında repo'ya yazılır
 }
-function delPosition(i){ S.positions.splice(i,1); renderPortfolio(); savePortfolio(); }
+function delPosition(i){
+  if(!portfolioWritable()) return;
+  S.positions.splice(i,1); renderPortfolio(); savePortfolio();
+}
 async function savePortfolio(){
+  if(!portfolioWritable()) return;
   try{
     await writeJson(pfPath(S.profile), {positions:S.positions},
       `webapp: ${slugify(S.profile)} portfolio update`);
@@ -3212,11 +3393,33 @@ function compareHisseler(a,b){
   }
   return a.sym.localeCompare(b.sym);
 }
+/* Veri tarihi özeti: paketteki son kapanış tarihi sembolden sembole değişebilir
+   (örn. 625 hisse 22 Eki, 3 hisse 23 Eki). Tek bir sembolün tarihi bütün
+   tablonun tarihi gibi gösterilmez. */
+function bundleDateSummary(bars){
+  const counts=new Map();
+  let total=0;
+  for(const [sym, b] of Object.entries(bars || {})){
+    if(!isEquitySymbol(sym) || !b || !Array.isArray(b.t) || !b.t.length) continue;
+    const day=String(b.t[b.t.length-1] || "");
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+    counts.set(day, (counts.get(day) || 0)+1);
+    total++;
+  }
+  if(!total) return "?";
+  const [common, n]=[...counts.entries()].sort((a, b)=>b[1]-a[1] || b[0].localeCompare(a[0]))[0];
+  if(counts.size===1) return fmtDate(common);
+  const latest=[...counts.keys()].sort().pop();
+  const head=`${fmtDate(common)} (${n}/${total} hisse)`;
+  return latest===common ? `${head}, diğerleri daha eski`
+    : `${head}; en yeni ${fmtDate(latest)} (${counts.get(latest)} hisse)`;
+}
 async function renderHisseler(){
   const meta=document.getElementById("hisselerMeta"), table=document.getElementById("hisselerTable");
   if(!meta||!table) return;
   try{ await ensureBundle(); }
-  catch(e){ meta.textContent="Veri okunamadı: "+e.message; return; }
+  catch(e){ meta.textContent=`Hisse verisi okunamadı: ${readFailureText(e)}`; noteReadFailure(e); return; }
+  if(!S.chartBundle){ meta.textContent="Hisse veri paketi bulunamadı."; table.innerHTML=""; return; }
   const bars=(S.chartBundle&&S.chartBundle.bars)||{};
   const fin=(S.chartBundle&&S.chartBundle.fin)||{};
   renderWatchlist();
@@ -3234,8 +3437,7 @@ async function renderHisseler(){
     rows.push({sym, sector, price:quote?quote.price:null, source:quote?quote.source:"", quote, chg, company});
   }
   rows.sort(compareHisseler);
-  const lastDay=(()=>{const any=Object.values(bars)[0];return any?fmtDate(any.t[any.t.length-1]):"?";})();
-  meta.textContent=`${rows.length} hisse · veri tarihi: ${lastDay}`;
+  meta.textContent=`${rows.length} hisse · veri tarihi: ${bundleDateSummary(bars)}`;
   let html=`<tr><th class="col-sym sortable" onclick="setHisselerSort('sym')">Hisse${sortMark("sym")}</th>`+
     `<th>Şirket Adı</th>`+
     `<th class="col-price num sortable" onclick="setHisselerSort('price')">Fiyat${sortMark("price")}</th>`+
@@ -3277,7 +3479,7 @@ async function renderSector(){
   if(!sym){ meta.textContent="Sembol girilince hissenin sektör tablosu açılır."; table.innerHTML=""; return; }
   try{
     if(!S.chartBundle){ meta.textContent="veri yükleniyor…"; await ensureBundle(); }
-  }catch(e){ meta.textContent="Veri okunamadı: "+e.message; return; }
+  }catch(e){ meta.textContent=`Sektör verisi okunamadı: ${readFailureText(e)}`; noteReadFailure(e); return; }
   const fin=(S.chartBundle && S.chartBundle.fin)||{};
   const me=fin[sym];
   if(!me){ meta.textContent=`${sym} için bilanço verisi pakette yok.`; table.innerHTML=""; return; }
@@ -3398,6 +3600,7 @@ async function boot(){
   const pill=document.getElementById("profilePill");
   pill.textContent=slugify(S.profile); pill.classList.remove("hide");
   document.getElementById("headSub").textContent=S.repo;
+  clearReadFailureNote();  // önceki bağlantının hata açıklaması yeni bağlantıya taşınmaz
   // Aday kapısı, fiyatlar, Karne ve Portföy birbirini beklemez. Aday
   // yüklemesi show()'dan ÖNCE başlar: önceki doğrulamanın tablosu/rozeti ilk
   // await'ten önce silinir ve yerine "doğrulanıyor" çizilir.
@@ -3416,7 +3619,7 @@ async function boot(){
     renderDetail();
     renderPortfolio();
     renderHisseler();
-  }).catch(()=>{});
+  }).catch(noteReadFailure);
   await Promise.all([market, portfolio]);
 }
 applyFontSizePreference();  // kaydedilmiş yazı boyutunu ilk çizimden önce uygula
