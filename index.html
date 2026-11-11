@@ -192,20 +192,13 @@
     .table-wrap{max-height:82vh;}
     .metric-grid{grid-template-columns:repeat(4,minmax(0,1fr));}
   }
-  /* --- Karne v2 (okul karnesi) --- */
-  .grade-row{display:flex;align-items:center;gap:10px;padding:10px 0;
-             border-bottom:1px solid var(--line);}
-  .grade-row:last-child{border-bottom:none;}
-  .grade-badge{flex:0 0 auto;min-width:64px;text-align:center;border-radius:8px;
-               padding:7px 8px;font-weight:800;font-size:calc(13px * var(--fs));color:#fff;}
-  .grade-badge.g-iyi{background:#2f6f44;} .grade-badge.g-orta{background:#b8860b;}
-  .grade-badge.g-zayif{background:#a33a3a;} .grade-badge.g-yok{background:#8a97a3;}
-  .grade-body{min-width:0;}
-  .grade-body .ders{font-weight:700;font-size:calc(13px * var(--fs));}
-  .grade-body .aciklama{font-size:calc(12px * var(--fs));color:var(--ink);line-height:1.4;margin-top:2px;}
+  /* --- Karne v2 (tanısal ölçüm; not ya da başarı hükmü yok) --- */
   .verdict{border:1px solid var(--line);border-left:4px solid var(--warn);
            border-radius:8px;background:#fffdf5;padding:10px 12px;font-size:calc(13px * var(--fs));
            line-height:1.45;margin-bottom:10px;}
+  .verdict ul{margin:6px 0 4px 18px;padding:0;}
+  .verdict li{margin:2px 0;}
+  #karneStore{font-size:calc(12px * var(--fs));line-height:1.45;margin-top:10px;}
   details.karne-detay{margin-top:10px;}
   details.karne-detay summary{font-size:calc(12px * var(--fs));color:var(--acc);font-weight:700;
            cursor:pointer;padding:6px 0;}
@@ -300,19 +293,26 @@
     <div class="card">
       <h2>Sistemin Karnesi</h2>
       <div class="muted" id="karneMeta">yükleniyor...</div>
-      <div class="verdict" id="karneVerdict"></div>
-      <div id="karneGrades"></div>
+      <div class="verdict" id="karneStatus"></div>
+      <div class="table-wrap"><table id="karneTable"></table></div>
+      <div class="muted" id="karneStore"></div>
       <details class="karne-detay">
-        <summary>Detaylı tablo (meraklısına)</summary>
-        <div class="table-wrap"><table id="karneTable"></table></div>
+        <summary>Ölçüm tanımı ve sınırları</summary>
         <p class="muted" style="margin-top:8px">
-          <b>Nasıl okunur:</b> "Endekse fark" = o ufukta XU100'e göre ORTALAMA
-          fark, puan olarak. "Endeksi yenen" = önerilerin yüzde kaçı endeksten
-          iyi getirdi. Bu oranı <b>%50 ile değil, Rastgele satırıyla</b>
-          kıyaslayın: endeks ağırlıklı ortalamadır ve tipik hisse onun altında
-          kalır — rastgele seçim bile endeksi çoğunlukla yenemez. Ortalama
-          negatifken yenme oranının %35-40 olması çelişki değildir: birkaç kötü
-          gün ortalamayı aşağı çeker.
+          <b>Endekse kıyas tablosu</b> (izleme analizörü, brüt): hisse, seçim
+          tarihinden sonraki ilk işlem gününün <b>açılışında</b> alınmış ve N
+          işlem günü sonraki <b>kapanışta</b> çıkılmış sayılır. XU100 aynı giriş
+          gününün <b>kapanışından</b> aynı çıkış gününün kapanışına ölçülür; iki
+          bacağın giriş anı aynı değildir. "Endekse ort. fark" = hisse getirisi
+          eksi XU100 getirisinin ortalaması (puan). "Endeksi geçen" = bu farkı
+          pozitif olan satırların payı. n = o ufukta tamamlanmış satır sayısı.
+        </p>
+        <p class="muted">
+          Tablo, izleme defterindeki aday ve kontrol kayıtlarının hepsini
+          değerlendirme durumlarından bağımsız kullanır; bir kaydın Telegram'a
+          gerçekten gönderilip gönderilmediğine bakmaz. "Rastgele kontrol" = aynı
+          günün geçerli tarama satırlarından, aday ve gölge hisseleri dışında
+          sabit tohumla seçilen en çok 5 hisse.
         </p>
       </details>
     </div>
@@ -429,7 +429,7 @@
 /* Görünür build kimliği: commit hash'ine bağlı olmayan, monoton CalVer
    YYYY.MM.DD.ordinal. Her webapp release adayında ordinal artırılır; bu kimlik
    tek başına deploy/canlılık iddiası değildir. */
-const APP_BUILD_ID="2026.10.24.1";
+const APP_BUILD_ID="2026.10.26.1";
 function applyAppBuildId(){
   document.documentElement.dataset.appBuildId=APP_BUILD_ID;
   const el=document.getElementById("appBuildId");
@@ -507,6 +507,7 @@ const S = {
   rowBySymbol: {},
   candidateGate: {seq: 0, phase: "LOADING", reason: "", generatedAt: null},
   candidateLoadSeq: 0,
+  karneLoadSeq: 0,   // yalnız en son Karne okuması ekrana yazar (loadKarne)
   positions: [],
   /* Kendi portföy dosyasının okuma durumu: LOADING / OK / ERROR. OK olmadan
      portföy yazılmaz; okunamayan bir portföy "boş" sanılıp üzerine yazılmaz. */
@@ -2341,79 +2342,208 @@ function loadAdaylar(){
 }
 
 async function loadKarne(){
-  const meta=document.getElementById("karneMeta");
-  try{
-    const rep = await readJson("data/analysis/morning_pick_report.json");
-    if(!rep){ meta.textContent="Rapor bulunamadı."; return; }
-    const s=rep.summary||{};
-    meta.textContent=`Karne tarihi: ${rep.report_date?fmtDate(rep.report_date):"?"} · Notlanan öneri: ${rep.evaluated??"?"}`;
-    const byG=(rep.relative_summary||{}).by_group||{};
-    const cand=byG.candidate||{}, ctrl=byG.control||{};
-    const H=["1","3","5","10"];
-    const rel=h=>num((cand[h]||{}).avg_relative_return_pct);
-    const relC=h=>num((ctrl[h]||{}).avg_relative_return_pct);
-
-    /* Ders 1 — Endeksi geçebilme: tüm ufuklardaki ortalama fark */
-    const rels=H.map(rel).filter(v=>v!==null);
-    const relAvg=rels.length?rels.reduce((a,b)=>a+b,0)/rels.length:null;
-    let g1, a1;
-    if(relAvg===null){ g1=["Veri yok","g-yok"]; a1="Henüz yeterli sonuç birikmedi."; }
-    else if(rels.every(v=>v>0)){ g1=["İyi","g-iyi"];
-      a1=`100 TL'lik yarışta öneri sepeti, endeks fonunu ortalama ${fmt(Math.abs(relAvg),1)} TL geçti.`; }
-    else if(relAvg>0){ g1=["Orta","g-orta"];
-      a1="Bazı ufuklarda endeksin önünde, bazılarında gerisinde — net üstünlük yok."; }
-    else { g1=["Zayıf","g-zayif"];
-      a1=`100 TL ile yarış: 10 gün sonunda öneri sepeti, endeks fonunun ortalama ${fmt(Math.abs(rel("10")??relAvg),1)} TL gerisinde kaldı. Şimdilik endeks fonu önde.`; }
-
-    /* Ders 2 — Rastgeleden iyi olma: candidate − control farkı */
-    const diffs=H.map(h=>{const a=rel(h),b=relC(h);return (a!==null&&b!==null)?a-b:null;})
-                 .filter(v=>v!==null);
-    const dAvg=diffs.length?diffs.reduce((a,b)=>a+b,0)/diffs.length:null;
-    let g2,a2;
-    if(dAvg===null){ g2=["Veri yok","g-yok"]; a2="Kıyas için veri yok."; }
-    else if(dAvg>1){ g2=["İyi","g-iyi"];
-      a2=`Gözü kapalı (rastgele) seçime göre ortalama ${fmt(dAvg,1)} puan daha iyi — seçim bir işe yarıyor.`; }
-    else if(dAvg>0){ g2=["Orta","g-orta"];
-      a2=`Rastgele seçimden ortalama ${fmt(dAvg,1)} puan iyi; ama fark küçük — şans da olabilir, kanıt birikiyor.`; }
-    else { g2=["Zayıf","g-zayif"];
-      a2="Rastgele seçim bile şu an daha iyi görünüyor."; }
-
-    /* Ders 3 — Para kazandırma (mutlak): kazanma oranı + ortalama getiri */
-    const win=num(s.win_rate_pct), avg=num(s.avg_return_pct);
-    let g3,a3;
-    if(win===null){ g3=["Veri yok","g-yok"]; a3="Veri yok."; }
-    else { g3 = win>=60?["İyi","g-iyi"]:(win>=50?["Orta","g-orta"]:["Zayıf","g-zayif"]);
-      a3=`Her 10 öneriden ${Math.round(win/10)}'i para kazandırdı; ortalama getiri %${fmt(avg,1)}. `+
-         `(Dikkat: piyasa yükselirken çoğu şey kazandırır — asıl soru yukarıdaki iki ders.)`; }
-
-    const grades=[["Endeksi geçebilme",g1,a1],["Rastgeleden iyi seçebilme",g2,a2],["Para kazandırma",g3,a3]];
-    document.getElementById("karneGrades").innerHTML = grades.map(([ders,[not_,cls],ac])=>
-      `<div class="grade-row"><div class="grade-badge ${cls}">${not_}</div>
-       <div class="grade-body"><div class="ders">${ders}</div>
-       <div class="aciklama">${ac}</div></div></div>`).join("");
-
-    const worst=[g1,g2,g3].some(g=>g[1]==="g-zayif");
-    document.getElementById("karneVerdict").innerHTML =
-      `<b>Öğretmen görüşü:</b> ${ worst
-        ? "Sistem henüz endeks fonundan iyi değil ve bunu saklamıyor. Tam da bu yüzden yeni skorlayıcı (V3) denemede — onun ilk notları ~17 Temmuz'dan itibaren bu karneye düşecek."
-        : "Sistem endeksin önünde — ama kanıt biriktikçe teyit edilmeli."} Yatırım tavsiyesi değildir.`;
-
-    /* Detay tablosu: candidate + KONTROL satırlarıyla */
-    let html = "<tr><th>Ufuk</th><th class=num>Öneri: endekse fark</th><th class=num>Öneri: yenme</th><th class=num>Rastgele: fark</th><th class=num>Rastgele: yenme</th></tr>";
-    for (const h of H){
-      const c=cand[h]||{}, k=ctrl[h]||{};
-      html += `<tr><td>${h} gün</td>
-        <td class="num ${signCls(c.avg_relative_return_pct)}">${fmt(c.avg_relative_return_pct,2)}</td>
-        <td class=num>%${fmt(c.relative_win_rate_pct,1)}</td>
-        <td class="num ${signCls(k.avg_relative_return_pct)}">${fmt(k.avg_relative_return_pct,2)}</td>
-        <td class=num>%${fmt(k.relative_win_rate_pct,1)}</td></tr>`;
-    }
-    document.getElementById("karneTable").innerHTML = html;
-  }catch(e){
-    meta.textContent=`Karne okunamadı: ${readFailureText(e)}`;
+  // Yalnız en son okuma ve yalnız başladığı bağlam (repo/profil/token) ekrana
+  // yazar: geç dönen eski bir yanıt (başarı, 404, okuma ya da parse hatası) yeni
+  // sonucun üstüne sayı ya da hata koyamaz.
+  const seq=(Number(S.karneLoadSeq)||0)+1;
+  S.karneLoadSeq=seq;
+  const context=karneReadContext();
+  const current=()=>seq===S.karneLoadSeq && context===karneReadContext();
+  // Önce boş durum: önceki okumadan kalan sayı yeni raporun yanında durmasın.
+  karnePaint({meta:"yükleniyor...", ...KARNE_EMPTY});
+  let rep;
+  try{ rep = await readJson("data/analysis/morning_pick_report.json"); }
+  catch(e){
+    if(!current()) return;
+    karnePaint({meta:`Karne okunamadı: ${readFailureText(e)}`, ...KARNE_EMPTY});
     msg(e.message,"err");
     noteReadFailure(e);
+    return;
   }
+  if(!current()) return;
+  // Bütün parçalar önce saf olarak hazırlanır; çizim hatası yarım değer bırakmaz.
+  let view;
+  try{ view=karneRender(rep); }
+  catch(e){
+    view={meta:`Karne çizilemedi: ${(e && e.message) || e}`, ...KARNE_EMPTY};
+    msg(`Karne çizilemedi: ${(e && e.message) || e}`,"err");
+  }
+  karnePaint(view);
+}
+
+/* Karne = tanısal ölçüm (20261026-karne-claim-safety). Bu rapor kabul edilmiş bir
+   performans ölçümü değildir (MEASUREMENT_V1_ACCEPTED = NO): kayıtlar teslim
+   defteriyle eşleşmez, getiriler brüttür, ufuklar örtüşür. Ekran ham gözlemi grup,
+   n, ufuk ve konvansiyonuyla gösterir; hiçbir sayı not, eşik ya da başarı hükmüne
+   çevrilmez. Yalnız tanıdığı legacy biçimi çizer: ölçüm sürümü bildiren bir rapor
+   (ileride MI-v1 gibi) legacy açıklamalarıyla karışmasın diye sayısız kalır
+   (fail-closed); o sürümün gösterimi ayrıca tanımlanmalıdır. Rapordaki sayılar
+   ortak num() ile değil, aşağıdaki katı doğrulayıcılarla okunur: metin, kesirli
+   sayaç ya da aralık dışı yüzde gözlem olarak gösterilmez. */
+const KARNE_STATE={LEGACY:"LEGACY", UNKNOWN_MEASUREMENT:"UNKNOWN_MEASUREMENT", INVALID:"INVALID"};
+const KARNE_EMPTY={status:"", table:"", store:""};
+/* Üst seviye ve summary sayaçları aynı kayıtlardan aynı tanımla yazılır
+   (evaluate_morning_picks._build_report / tracking.morning_picks._summary);
+   kayıt durumu yalnız PENDING / EVALUATED / FAILED olabilir. */
+const KARNE_COUNT_KEYS=[["total_records","toplam kayıt"],["evaluated","değerlendirilen"],
+                        ["pending","bekleyen"],["failed","kalıcı FAILED"]];
+const KARNE_BENCHMARK="XU100.IS";
+const KARNE_VERSION_KEYS=["measurement_contract_version","measurement_version","contract_version","schema_version"];
+const KARNE_GROUPS=[["candidate","Aday"],["control","Rastgele kontrol"]];
+const KARNE_LEGACY_STATUS_HTML=
+  "<b>Ölçüm durumu: TANISAL (legacy).</b> Bu sayfa seçim başarısı, endeksi geçme ya da "+
+  "getiri hükmü vermez; aşağıdaki sayılar ham gözlemdir."+
+  "<ul><li>Kabul edilmiş performans ölçümü (MI-v1) henüz yok; ölçüm, kayıtları Telegram "+
+  "teslim defteriyle eşleştirmiyor.</li>"+
+  "<li>Getiriler brüt: komisyon, makas ve kayma düşülmedi.</li>"+
+  "<li>Ufuklar örtüşüyor ve aynı günün hisseleri birlikte hareket ediyor; n, bağımsız "+
+  "deneme sayısı değildir.</li>"+
+  "<li>Rapor dönem ayrımı vermez; farklı sıralama dönemleri (V3 öncesi ve sonrası) "+
+  "birlikte olabilir.</li></ul>Yatırım tavsiyesi değildir.";
+
+function karneReadContext(){ return [S.repo, S.profile, S.token].map(v=>String(v||"")).join("\u0000"); }
+function karnePaint(view){
+  document.getElementById("karneMeta").textContent=view.meta;
+  document.getElementById("karneStatus").innerHTML=view.status;
+  document.getElementById("karneTable").innerHTML=view.table;
+  document.getElementById("karneStore").innerHTML=view.store;
+}
+/* Saf: ekrana yazmadan bütün Karne parçalarını hazırlar. */
+function karneRender(rep){
+  if(!rep) return {meta:"Rapor bulunamadı.", ...KARNE_EMPTY};
+  const view=karneReportView(rep);
+  const stamp=`Karne tarihi: ${rep.report_date?fmtDate(rep.report_date):"?"}`;
+  if(view.state===KARNE_STATE.INVALID)
+    return {meta:`${stamp} · rapor beklenen biçimde değil; gösterilmiyor.`, ...KARNE_EMPTY};
+  if(view.state===KARNE_STATE.UNKNOWN_MEASUREMENT)
+    return {meta:`${stamp} · ölçüm sürümü tanınmadı`, ...KARNE_EMPTY,
+            status:karneUnknownMeasurementHtml(view.declared)};
+  return {meta:`${stamp} · ölçüm: legacy tanısal (kabul edilmiş ölçüm değil)`,
+          status:KARNE_LEGACY_STATUS_HTML, table:karneRelativeTableHtml(view.relative),
+          store:karneStoreHtml(rep)};
+}
+/* Katı rapor sayıları: yalnız gerçek JSON number kabul edilir; eksik ya da
+   geçersiz değer sıfıra dönmez. */
+function karneCount(v){ return (typeof v==="number" && Number.isSafeInteger(v) && v>=0) ? v+0 : null; }
+function karnePct(v){ return (typeof v==="number" && Number.isFinite(v) && v>=0 && v<=100) ? v : null; }
+function karneAvg(v){ return (typeof v==="number" && Number.isFinite(v)) ? v : null; }
+/* Alanın durumu: absent (yok ya da null) | invalid (var ama sözleşmeye uymuyor) | ok. */
+function karneField(holder, key, check){
+  if(!holder || !Object.prototype.hasOwnProperty.call(holder, key)) return {state:"absent", value:null};
+  const raw=holder[key];
+  if(raw===null || raw===undefined) return {state:"absent", value:null};
+  const value=check(raw);
+  return value===null ? {state:"invalid", value:null} : {state:"ok", value};
+}
+
+function karneDeclaredVersion(rep){
+  for (const holder of [rep, rep.relative_summary]){
+    if(!holder || typeof holder!=="object" || Array.isArray(holder)) continue;
+    for (const key of KARNE_VERSION_KEYS)
+      if(Object.prototype.hasOwnProperty.call(holder, key)) return `${key}=${String(holder[key])}`;
+  }
+  return null;
+}
+function karneReportView(rep){
+  if(!rep || typeof rep!=="object" || Array.isArray(rep)) return {state:KARNE_STATE.INVALID};
+  const declared=karneDeclaredVersion(rep);
+  if(declared!==null) return {state:KARNE_STATE.UNKNOWN_MEASUREMENT, declared};
+  return {state:KARNE_STATE.LEGACY, relative:karneRelativeView(rep.relative_summary)};
+}
+function karneRelativeView(rs){
+  if(!rs || typeof rs!=="object" || Array.isArray(rs))
+    return {ok:false, reason:"Endekse kıyas özeti raporda yok."};
+  if(rs.status==="insufficient_data")
+    return {ok:false, reason:"Endekse kıyas için henüz yeterli tamamlanmış kayıt yok."};
+  if(rs.status!=="ok")
+    return {ok:false, reason:"Endekse kıyas özetinin durumu tanınmadı; gösterilmiyor."};
+  if(rs.benchmark_symbol!==KARNE_BENCHMARK)
+    return {ok:false, reason:"Endekse kıyas özetinin endeksi tanınmadı; gösterilmiyor."};
+  const horizons=rs.horizons_trading_days;
+  if(!Array.isArray(horizons) || !horizons.length || !horizons.every(h=>Number.isInteger(h) && h>0))
+    return {ok:false, reason:"Endekse kıyas özetinin ufuk tanımı tanınmadı; gösterilmiyor."};
+  const byGroup=(rs.by_group && typeof rs.by_group==="object" && !Array.isArray(rs.by_group)) ? rs.by_group : {};
+  return {ok:true, horizons, byGroup};
+}
+function karneGroupCells(metrics){
+  const holder=(metrics && typeof metrics==="object" && !Array.isArray(metrics)) ? metrics : null;
+  const n=karneField(holder, "n", karneCount);
+  // n yoksa ya da geçersizse ona bağlı hiçbir istatistik gösterilmez; n=0 oran üretmez.
+  if(n.state==="absent") return "<td class=num>-</td><td class=num>-</td>";
+  if(n.state==="invalid") return '<td class=num>-<span class="cell-sub">n geçersiz</span></td><td class=num>-</td>';
+  if(n.value===0) return '<td class=num>-<span class="cell-sub">n=0</span></td><td class=num>-</td>';
+  const avg=karneAvg(holder.avg_relative_return_pct);
+  const win=karnePct(holder.relative_win_rate_pct);
+  return `<td class="num ${avg===null?"":signCls(avg)}">${avg===null?"-":fmt(avg,2)}`+
+    `<span class="cell-sub">n=${fmt(n.value,0)}</span></td>`+
+    `<td class=num>${win===null?"-":"%"+fmt(win,1)}</td>`;
+}
+function karneRelativeTableHtml(rel){
+  if(!rel.ok) return `<tr><td class=muted>${esc(rel.reason)}</td></tr>`;
+  let html="<tr><th>Ufuk<span class=\"cell-sub\">işlem günü</span></th>"+KARNE_GROUPS.map(([,label])=>
+    `<th class=num>${label}<span class="cell-sub">endekse ort. fark</span></th>`+
+    `<th class=num>${label}<span class="cell-sub">endeksi geçen</span></th>`).join("")+"</tr>";
+  for (const h of rel.horizons){
+    html+=`<tr><td>${h}</td>`+KARNE_GROUPS.map(([key])=>{
+      const group=rel.byGroup[key];
+      return karneGroupCells((group && typeof group==="object") ? group[String(h)] : null);
+    }).join("")+"</tr>";
+  }
+  return html;
+}
+function karneStoreHtml(rep){
+  const s=(rep.summary && typeof rep.summary==="object" && !Array.isArray(rep.summary)) ? rep.summary : null;
+  // İki seviyedeki aynı anlamlı sayaçlar uyuşmalı; uyuşmazlık, geçersiz sayaç ya
+  // da tutmayan toplam varsa sayaç ve oran gösterilmez. Eksik üst seviye sayaç
+  // doğrulanmış summary değerinden okunur; ikisi de yoksa "?" kalır.
+  const problems=[], counts={};
+  for (const [key, label] of KARNE_COUNT_KEYS){
+    const top=karneField(rep, key, karneCount), sub=karneField(s, key, karneCount);
+    if(top.state==="invalid" || sub.state==="invalid"){ problems.push(`${label} sayacı geçersiz`); continue; }
+    if(top.state==="ok" && sub.state==="ok" && top.value!==sub.value){
+      problems.push(`${label} üst seviyede ${fmt(top.value,0)}, özette ${fmt(sub.value,0)}`);
+      continue;
+    }
+    counts[key]=top.state==="ok" ? top.value : (sub.state==="ok" ? sub.value : null);
+  }
+  // Üç durum ayrıktır: bilinen alt sayaçların toplamı toplamı aşamaz; üçü de
+  // biliniyorsa toplamı tam vermelidir. Eksik alt sayaç tek başına çelişki değildir.
+  if(!problems.length && counts.total_records!==null){
+    const known=KARNE_COUNT_KEYS.slice(1).filter(([key])=>counts[key]!==null);
+    const parts=known.reduce((sum, [key])=>sum+counts[key], 0);
+    if(known.length===3 && parts!==counts.total_records)
+      problems.push(`değerlendirilen + bekleyen + kalıcı FAILED (${fmt(parts,0)}) toplam kayıtla `+
+                    `(${fmt(counts.total_records,0)}) uyuşmuyor`);
+    else if(parts>counts.total_records)
+      problems.push(`${known.map(([, label])=>label).join(" + ")} (${fmt(parts,0)}) toplam kayıttan `+
+                    `(${fmt(counts.total_records,0)}) büyük`);
+  }
+  const head="<b>İzleme defterinin tamamı</b> (aday + rastgele kontrol + gölge birlikte; seçim "+
+    "tarihindeki ya da sonraki ilk işlem günündeki kapanıştan 14 takvim günü sonraki kapanışa; brüt)";
+  if(problems.length)
+    return `${head}: <b>veri tutarsızlığı</b> — ${esc(problems.join("; "))}. Sayaçlar ve oranlar gösterilmiyor.`;
+  const shown=key=>counts[key]===null ? "?" : fmt(counts[key],0);
+  return `${head}: değerlendirilen ${shown("evaluated")} · bekleyen ${shown("pending")} · `+
+    `kalıcı FAILED ${shown("failed")}; ${karneStoreRates(s)}. `+
+    "Gruplar karışık olduğu ve kalıcı FAILED kayıtlar ortalamaya girmediği için bu sayılar aday "+
+    "listesinin başarısını göstermez.";
+}
+function karneStoreRates(s){
+  if(!s) return "oran ve ortalama raporda yok";
+  // Oran ve ortalama summary'nin kendi değerlendirilen sayacı üzerindendir: o
+  // payda doğrulanmadan ikisi de gösterilmez. Birinin eksikliği diğerini gizlemez.
+  const denominator=karneField(s, "evaluated", karneCount);
+  if(denominator.state!=="ok") return "oran ve ortalamanın paydası (özetteki değerlendirilen sayacı) raporda yok";
+  if(denominator.value===0) return "değerlendirilmiş kayıt olmadığı için oran ve ortalama yok";
+  const part=(field, label, text)=>field.state==="ok" ? `${label} ${text(field.value)}`
+    : `${label} ${field.state==="invalid" ? "geçersiz" : "yok"}`;
+  return `${part(karneField(s, "win_rate_pct", karnePct), "pozitif getirili satır oranı", v=>"%"+fmt(v,1))}, `+
+    `${part(karneField(s, "avg_return_pct", karneAvg), "ortalama getiri", v=>"%"+fmt(v,2))}`;
+}
+function karneUnknownMeasurementHtml(declared){
+  return "<b>Ölçüm durumu: TANINMADI.</b> Rapor bu ekranın tanımadığı bir ölçüm sürümü bildiriyor "+
+    `(<code>${esc(declared)}</code>). Legacy açıklamalarıyla karışmasın diye sayılar gösterilmiyor; `+
+    "bu sürümün gösterimi ayrıca tanımlanmalı. Yatırım tavsiyesi değildir.";
 }
 
 function pfPath(slug){ return `webapp/portfolios/${slugify(slug||S.profile)}.json`; }
