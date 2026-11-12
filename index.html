@@ -330,7 +330,7 @@
           <input id="pfCost" type="number" inputmode="decimal" placeholder="Maliyet">
         </div>
         <div class="muted" id="pfPriceHint" style="margin:6px 0 10px"></div>
-        <button class="btn" onclick="addPosition()">Kendi portföyüme ekle</button>
+        <button class="btn" id="pfAddBtn" onclick="addPosition()">Kendi portföyüme ekle</button>
       </div>
     </div>
   </section>
@@ -429,7 +429,7 @@
 /* Görünür build kimliği: commit hash'ine bağlı olmayan, monoton CalVer
    YYYY.MM.DD.ordinal. Her webapp release adayında ordinal artırılır; bu kimlik
    tek başına deploy/canlılık iddiası değildir. */
-const APP_BUILD_ID="2026.10.26.1";
+const APP_BUILD_ID="2026.11.12.1";
 function applyAppBuildId(){
   document.documentElement.dataset.appBuildId=APP_BUILD_ID;
   const el=document.getElementById("appBuildId");
@@ -512,7 +512,13 @@ const S = {
   /* Kendi portföy dosyasının okuma durumu: LOADING / OK / ERROR. OK olmadan
      portföy yazılmaz; okunamayan bir portföy "boş" sanılıp üzerine yazılmaz. */
   portfolioLoad: {state: "LOADING", text: ""},
+  /* Okunan kendi portföy dosyası {slug, path, missing, sha, data}: sha yazmada
+     iyimser eşzamanlılık belirtecidir; yalnız bu dosyanın profiline yazılır. */
+  pfDoc: null,
+  pfLoadSeq: 0,       // yalnız en son portföy okuması uygulanır
+  pfSaving: false,    // kayıt sürerken yeni işlem alınmaz
   editingPos: null,   // kendi portföyünde düzenlenen satır indeksi (yoksa null)
+  editingRow: null,   // düzenleme açılırken satırın değeri (işlem buna bağlanır)
   relatedPortfolios: [],
   artifactInfo: {},
   hisselerSort: {key:"sym", dir:1},
@@ -533,6 +539,41 @@ function esc(value){
   return String(value ?? "").replace(/[&<>"']/g, ch => (
     {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]
   ));
+}
+/* Veri asla koda dönüşmez (20261112-webapp-safety-fix). Script'in ürettiği
+   HTML'de satır içi olay işleyicisi özniteliği YOKTUR: sembol gibi veriler
+   (portföy dosyaları, CI veri paketi, aday listesi, localStorage) yalnız
+   esc() ile kaçışlanmış data-* özniteliklerinde taşınır ve tek bir delege
+   dinleyici sabit eylem listesinden çağırır. HTML öznitelik değeri tarayıcıda
+   önce HTML olarak çözülüp sonra JS olarak çalıştığı için kaçış o bağlamda
+   yetmezdi; bu yapı bağlamı tümden kaldırır. Test-pinli
+   (tests/test_webapp_safety.py). */
+const UI_ACTIONS = {
+  selectDetail: el => selectDetail(el.dataset.symbol),
+  watchlistRemove: el => watchlistRemove(el.dataset.symbol),
+  watchlistToggle: el => watchlistToggle(el.dataset.symbol),
+  setHisselerSort: el => setHisselerSort(el.dataset.sort),
+  editPosition: el => editPosition(el.dataset.row),
+  delPosition: el => delPosition(el.dataset.row),
+  saveEditPosition: el => saveEditPosition(el.dataset.row),
+  cancelEditPosition: () => cancelEditPosition(),
+  openSetup: () => openSetup(),
+  refreshApp: () => refreshApp(),
+};
+function actionAttrs(action, data){
+  let out=` data-action="${esc(action)}"`;
+  for(const [key, value] of Object.entries(data || {})) out+=` data-${key}="${esc(value)}"`;
+  return out;
+}
+/* En içteki data-action öğesi kazanır: satırdaki düğme satırın kendi
+   eylemini (Detay'a git) tetiklemez. Bilinmeyen eylem sessizce yok sayılır. */
+function handleUiAction(event){
+  const start=event && event.target;
+  const el=start && typeof start.closest==="function" ? start.closest("[data-action]") : null;
+  if(!el || !el.dataset) return;
+  const action=el.dataset.action;
+  if(!Object.prototype.hasOwnProperty.call(UI_ACTIONS, action)) return;
+  UI_ACTIONS[action](el);
 }
 function slugify(name){
   const map={"ç":"c","ğ":"g","ı":"i","ö":"o","ş":"s","ü":"u"};
@@ -658,8 +699,8 @@ function noteReadFailure(err){
   if(!el) return;
   const setup=READ_FAILURE_SETUP_KINDS.has(readFailureKind(err));
   el.innerHTML=`${esc(readFailureText(err))} `+(setup
-    ? '<button class="btn small" type="button" onclick="openSetup()">Kurulumu aç</button>'
-    : '<button class="btn small gray" type="button" onclick="refreshApp()">Yenile</button>');
+    ? `<button class="btn small" type="button"${actionAttrs("openSetup")}>Kurulumu aç</button>`
+    : `<button class="btn small gray" type="button"${actionAttrs("refreshApp")}>Yenile</button>`);
   el.classList.remove("hide");
 }
 function clearReadFailureNote(){
@@ -679,12 +720,16 @@ function parseJsonText(text, path){
 async function readJson(path, options={}){
   const cacheBust=Boolean(options.cacheBust);
   const url=new URL(githubContentsUrl(path));
-  const request={headers:apiHeaders({ "Accept": "application/vnd.github.raw+json" })};
+  const request={headers:apiHeaders({ "Accept": options.withSha
+    ? "application/vnd.github+json" : "application/vnd.github.raw+json" })};
   if(cacheBust){
     url.searchParams.set("ref", "main");
     url.searchParams.set("_cb", String(options.cacheBustKey||Date.now()));
     request.cache="no-store";
   }
+  // Yazılacak dosya önbellekten okunmaz: bayat bir sha, kaydı reddedilen ya da
+  // eski veriyi gösteren bir ekrana yol açar.
+  if(options.withSha) request.cache="no-store";
   let r;
   try{ r = await fetch(url.toString(), request); }
   catch(err){
@@ -696,6 +741,20 @@ async function readJson(path, options={}){
   if (rateLimited) throw readFailure("rate_limited", "GitHub istek sınırı doldu: HTTP " + r.status, r.status);
   if (r.status === 401 || r.status === 403) throw readFailure("auth", "Token reddedildi (yetki/expiry kontrol et).", r.status);
   if (!r.ok) throw readFailure(r.status >= 500 ? "server" : "http", "Okuma hatası: HTTP " + r.status, r.status);
+  if(options.withSha){
+    // İçerik ve blob sha'sı AYNI yanıttan gelir (Contents API JSON biçimi):
+    // ayrı iki istek arasında dosya değişirse içerik ile sha birbirini tutmaz.
+    let meta;
+    try{ meta=JSON.parse(await r.text()); }
+    catch(err){ throw readFailure(err instanceof TypeError ? "network" : "parse", `${path} meta yanıtı okunamadı.`); }
+    if(!meta || typeof meta.sha!=="string" || !meta.sha || meta.encoding!=="base64" || typeof meta.content!=="string"){
+      throw readFailure("parse", `${path} beklenen Contents API yanıtı değil.`);
+    }
+    let text;
+    try{ text=decodeBase64Utf8(meta.content); }
+    catch(err){ throw readFailure("parse", `${path} içeriği çözülemedi.`); }
+    return {text, sha: meta.sha};
+  }
   if(options.withText){
     // The candidate gate parses the exact text itself, token by token (see
     // P0A_ARTIFACT_GATE): parseJsonText's NaN rewrite does not know where a
@@ -707,25 +766,42 @@ async function readJson(path, options={}){
   try{ return parseJsonText(await r.text(), path); }
   catch(err){ throw readFailure(err instanceof TypeError ? "network" : "parse", err.message); }
 }
-async function fileSha(path){
-  const r = await fetch(githubContentsUrl(path),
-    { headers: apiHeaders({ "Accept": "application/vnd.github+json" }) });
-  if (r.status === 404) return null;
-  if (!r.ok) throw new Error("Meta okunamadı: HTTP " + r.status);
-  return (await r.json()).sha || null;
+function decodeBase64Utf8(b64){
+  const binary=atob(String(b64).replace(/\s+/g, ""));
+  const bytes=new Uint8Array(binary.length);
+  for(let i=0; i<binary.length; i++) bytes[i]=binary.charCodeAt(i);
+  return new TextDecoder("utf-8", {fatal: true}).decode(bytes);
 }
-async function writeJson(path, obj, message){
-  const content = btoa(unescape(encodeURIComponent(JSON.stringify(obj, null, 2) + "\n")));
-  const body = { message, content };
-  const sha = await fileSha(path);
-  if (sha) body.sha = sha;
-  const r = await fetch(githubContentsUrl(path),
-    { method:"PUT", headers: apiHeaders({ "Accept":"application/vnd.github+json" }),
-      body: JSON.stringify(body) });
-  if (!r.ok){
-    const detail = await r.text();
-    throw new Error("Yazma hatası: HTTP " + r.status + " " + detail.slice(0,120));
+/* Portföy yazımı (20261112-webapp-safety-fix): iyimser eşzamanlılık.
+   PUT, dosyanın OKUNDUĞU andaki blob sha'sıyla yapılır. Bu arada başka bir
+   cihaz yazdıysa GitHub reddeder (409; dosya bu arada oluştuysa sha'sız istek
+   422) ve "stale" döner: hiçbir şeyin üstüne yazılmaz. Eski sürüm sha'yı
+   yazma ANINDA okuyup tüm dosyayı yerel kopyayla değiştiriyordu; başka
+   cihazın kaydı sessizce kayboluyordu. Dosyanın bilinmeyen alanları korunur. */
+async function putPortfolioDoc(doc, positions){
+  const base=doc.data && typeof doc.data==="object" && !Array.isArray(doc.data) ? doc.data : {};
+  const data={...base, positions};
+  const content=btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2) + "\n")));
+  const body={message: `webapp: ${doc.slug} portfolio update`, content};
+  if(doc.sha) body.sha=doc.sha;
+  let r;
+  try{
+    r=await fetch(githubContentsUrl(doc.path),
+      { method:"PUT", headers: apiHeaders({ "Accept":"application/vnd.github+json" }),
+        body: JSON.stringify(body) });
+  }catch(err){
+    return {status:"error", text:`Ağ bağlantısı kurulamadı: ${(err && err.message) || err}`};
   }
+  if(r.ok){
+    let sha=null;
+    try{ const out=await r.json(); sha=out && out.content && typeof out.content.sha==="string" ? out.content.sha : null; }
+    catch(err){ sha=null; }
+    return {status:"ok", doc:{slug:doc.slug, path:doc.path, missing:false, sha, data}};
+  }
+  let detail="";
+  try{ detail=String(await r.text()); }catch(err){ detail=""; }
+  if(r.status===409 || (r.status===422 && /\bsha\b/i.test(detail))) return {status:"stale"};
+  return {status:"error", text:`Yazma hatası: HTTP ${r.status} ${detail.slice(0,120)}`.trim()};
 }
 
 function show(view){
@@ -2332,7 +2408,7 @@ function loadAdaylar(){
     const sym=normSymbol(r["Hisse"]);
     const quote=currentQuoteFor(sym);
     const chg=dailyChangeFor(sym);
-    html += `<tr class="clickable" onclick="selectDetail('${sym}')"><td>${i+1}</td><td><b>${esc(sym)}</b></td>
+    html += `<tr class="clickable"${actionAttrs("selectDetail", {symbol: sym})}><td>${i+1}</td><td><b>${esc(sym)}</b></td>
       <td class=muted>${esc(String(r["Şirket Adı"]||"").slice(0,20))}</td>
       <td class=num data-src="${quote?esc(quote.source):''}">${quote?fmt(quote.price):"-"}${priceBadgeHtml(quote)}</td>
       <td class="num ${changeCellCls(chg)}">${fmtChangeCell(chg)}</td>
@@ -2484,7 +2560,7 @@ function karneRelativeTableHtml(rel){
     `<th class=num>${label}<span class="cell-sub">endekse ort. fark</span></th>`+
     `<th class=num>${label}<span class="cell-sub">endeksi geçen</span></th>`).join("")+"</tr>";
   for (const h of rel.horizons){
-    html+=`<tr><td>${h}</td>`+KARNE_GROUPS.map(([key])=>{
+    html+=`<tr><td>${esc(h)}</td>`+KARNE_GROUPS.map(([key])=>{
       const group=rel.byGroup[key];
       return karneGroupCells((group && typeof group==="object") ? group[String(h)] : null);
     }).join("")+"</tr>";
@@ -2570,6 +2646,8 @@ function portfolioTotals(positions){
 }
 function renderPortfolioTable(positions, editable){
   if(!positions.length) return `<div class="muted">Henüz pozisyon yok.</div>`;
+  // Kayıt sürerken kendi portföyünde yeni işlem başlatılamaz (tek işlem kuralı).
+  const busy=editable && S.pfSaving ? " disabled" : "";
   let html='<div class="table-wrap"><table><tr><th>Hisse</th><th class=num>Adet</th><th class=num>Maliyet</th><th class=num>Fiyat</th><th class=num>Değer</th><th class=num>K/Z</th>';
   html += editable ? "<th></th></tr>" : "</tr>";
   positions.forEach((p,i)=>{
@@ -2581,8 +2659,8 @@ function renderPortfolioTable(positions, editable){
         <td class=num><input id="pfEditQty" type="number" inputmode="decimal" value="${esc(p.quantity)}"></td>
         <td class=num><input id="pfEditCost" type="number" inputmode="decimal" value="${esc(p.avg_cost)}"></td>
         <td class="num muted" colspan=2>düzenleniyor…</td>
-        <td class=num><button class="btn small" onclick="saveEditPosition(${i})">Kaydet</button></td>
-        <td><button class="btn small gray" onclick="cancelEditPosition()">İptal</button></td></tr>`;
+        <td class=num><button class="btn small" type="button"${actionAttrs("saveEditPosition", {row: i})}${busy}>Kaydet</button></td>
+        <td><button class="btn small gray" type="button"${actionAttrs("cancelEditPosition")}>İptal</button></td></tr>`;
       return;
     }
     /* Satır fiyatı da muhasebe zincirinden: satır Değer/K-Z hücreleri ile
@@ -2595,37 +2673,47 @@ function renderPortfolioTable(positions, editable){
     const validPrice=price!==null && price>0;
     const value=(validPrice && validQty)?price*qty:null;
     const pnl=(validPrice && validQty && validCost)?((price/avg-1)*100):null;
-    html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>
+    html+=`<tr class="clickable"${actionAttrs("selectDetail", {symbol: sym})}><td><b>${esc(sym)}</b></td>
       <td class=num>${validQty?fmt(qty,0):"-"}</td>
       <td class=num>${validCost?fmtCost(avg):"-"}</td>
       <td class=num data-src="${quote?esc(quote.source):''}">${price!==null?fmt(price):"-"}${changeArrow(dailyChangeFor(sym))}${priceBadgeHtml(quote)}</td>
       <td class=num>${value!==null?fmt(value):"-"}</td>
       <td class="num ${signCls(pnl)}">${pnl!==null?"%"+fmt(pnl,1):"-"}</td>`;
-    if(editable) html+=`<td class=pf-actions><button class="pf-edit" title="Düzenle" onclick="event.stopPropagation();editPosition(${i})">✎</button><button class=del title="Sil" onclick="event.stopPropagation();delPosition(${i})">x</button></td>`;
+    if(editable) html+=`<td class=pf-actions><button class="pf-edit" type="button" title="Düzenle"${actionAttrs("editPosition", {row: i})}${busy}>✎</button><button class=del type="button" title="Sil"${actionAttrs("delPosition", {row: i})}${busy}>x</button></td>`;
     html+="</tr>";
   });
   return html+"</table></div>";
 }
 /* Inline edit (PR C2): kendi portföy satırını sil-ekle olmadan düzenle.
-   Save/sync sözleşmesi DEĞİŞMEZ — Kaydet, add/del ile aynı savePortfolio'yu
-   çağırır (anlık sync); İptal orijinali korur (S.positions'a dokunulmaz). */
-function editPosition(i){ S.editingPos=i; renderPortfolio(); }
-function cancelEditPosition(){ S.editingPos=null; renderPortfolio(); }
+   Kaydet, ekle/sil ile aynı işlem akışına (commitPortfolioOp) gider; İptal
+   orijinali korur (S.positions'a dokunulmaz). Düzenleme açılırken satırın
+   DEĞERİ saklanır (S.editingRow): kayıt o değeri uzak dosyada arar, başka
+   cihazda değişmiş ya da silinmiş satırın üzerine yazmaz. */
+function editPosition(i){
+  const index=Number(i);
+  if(!Number.isInteger(index) || !S.positions[index]) return;
+  S.editingPos=index;
+  S.editingRow=clonePosition(S.positions[index]);
+  renderPortfolio();
+}
+function cancelEditPosition(){ S.editingPos=null; S.editingRow=null; renderPortfolio(); }
 function saveEditPosition(i){
-  if(!portfolioWritable()) return;
+  if(!portfolioWritable() || portfolioBusy()) return;
+  const index=Number(i);
   const sym=normSymbol(document.getElementById("pfEditSym").value);
   // num() ile parse: virgül/nokta güvenli, maliyet hassasiyeti korunur. (#290)
   const qty=num(document.getElementById("pfEditQty").value);
   const cost=num(document.getElementById("pfEditCost").value);
   if(!sym||qty===null||qty<=0||cost===null||cost<=0){
     msg("Sembol, adet ve maliyeti doldurun.","err"); return; }
-  if(!S.positions[i]) return;
-  // Aynı sembole başka satırda taşınırsa çakışma: mevcut davranışla tutarlı,
-  // yalnız bu satırı güncelle (birleştirme addPosition'da; burada in-place).
-  S.positions[i]={...S.positions[i], symbol:sym, quantity:qty, avg_cost:cost};
+  if(!validPortfolioSymbol(sym)){ msg(PORTFOLIO_SYMBOL_TEXT,"err"); return; }
+  const row=S.editingRow;
+  if(!row || index!==S.editingPos){ msg("Düzenlenen satır artık listede yok; İptal edip tekrar dene.","err"); return; }
+  // Aynı sembole başka satırda taşınırsa birleştirilmez: mevcut davranışla
+  // tutarlı, yalnız bu satır güncellenir (birleştirme addPosition'da).
   S.editingPos=null;
-  renderPortfolio();
-  savePortfolio();  // add/del ile aynı anlık-sync akışı
+  S.editingRow=null;
+  commitPortfolioOp({kind:"edit", row, index, symbol:sym, quantity:qty, avg_cost:cost});
 }
 function renderPortfolioGroup(title, positions, editable){
   // Kart başlığı SADE (yalnız profil adı); own/watched ayrımı görsel etiketle
@@ -2648,10 +2736,18 @@ function renderPortfolioStatus(title, text, failed){
     <div class="${failed ? "msg err" : "muted"}">${esc(text)}</div>
   </div>`;
 }
+/* Yazılabilir: okuma başarılı VE okunan dosya şu anki profilin dosyası (sha'sı
+   elimizde). Profil değiştikten sonra eski profilin ekranından yazılamaz. */
 function portfolioWritable(){
-  if((S.portfolioLoad || {}).state==="OK") return true;
+  const doc=S.pfDoc;
+  if((S.portfolioLoad || {}).state==="OK" && doc && doc.slug===slugify(S.profile)) return true;
   msg("Portföy okunamadığı için değişiklik kaydedilmedi. Yenile ile tekrar dene.","err");
   return false;
+}
+function portfolioBusy(){
+  if(!S.pfSaving) return false;
+  msg("Önceki portföy kaydı sürüyor; bitince tekrar dene.","err");
+  return true;
 }
 function renderPortfolio(){
   const wrap=document.getElementById("pfWrap");
@@ -2659,7 +2755,8 @@ function renderPortfolio(){
   const activeTitle=`${own} portföyü`;
   const load=S.portfolioLoad || {state:"LOADING", text:""};
   let html;
-  if(load.state==="OK") html=renderPortfolioGroup(activeTitle, S.positions, true);
+  if(load.state==="OK") html=(S.pfSaving ? `<div class="muted" id="pfSaveStatus">Kaydediliyor…</div>` : "")+
+    renderPortfolioGroup(activeTitle, S.positions, true);
   else if(load.state==="ERROR") html=renderPortfolioStatus(activeTitle,
     `Portföy okunamadı: ${load.text} Pozisyonlar gösterilmiyor; bu durumda ekleme ve düzenleme kaydedilmez. Yenile ile tekrar dene.`, true);
   else html=renderPortfolioStatus(activeTitle, "Portföy yükleniyor…", false);
@@ -2675,6 +2772,8 @@ function renderPortfolio(){
   // Form başlığı aktif profili açıkça söyler (hangi portföye eklediği belirsiz kalmasın).
   const heading=document.getElementById("pfAddHeading");
   if(heading) heading.textContent=`Kendi Portföyüme Hisse Ekle (${own})`;
+  const addBtn=document.getElementById("pfAddBtn");
+  if(addBtn) addBtn.disabled=Boolean(S.pfSaving);
   updatePriceHint();
 }
 /* Portföy dosyasının kullanılabilir biçimi: {positions: [nesne, …]}.
@@ -2682,13 +2781,15 @@ function renderPortfolio(){
    oluşturur (mevcut davranış). Var olan ama bu biçimde olmayan bir dosya,
    içeriği `null` olsa bile, boş sayılmaz: portföy ERROR olur ve yazılmaz. */
 const PORTFOLIO_SHAPE_TEXT="Portföy dosyası beklenen biçimde değil ({positions: [...]} okunamadı).";
-/* 404'ü, içeriği JSON null olan mevcut dosyadan ayırır: readJson ikisinde de
-   null döndürür, withText ise yalnız 404'te null döndürür. */
+/* 404'ü, içeriği JSON null olan mevcut dosyadan ayırır: withSha yalnız 404'te
+   null döndürür. İçerik ve blob sha'sı aynı yanıttan, önbelleksiz okunur; sha
+   yazmada iyimser eşzamanlılık belirtecidir (putPortfolioDoc). */
 async function readPortfolioFile(slug){
-  const path=pfPath(slug);
-  const doc=await readJson(path, {withText:true});
-  if(doc===null) return {missing:true, data:null};
-  try{ return {missing:false, data:parseJsonText(doc.text, path)}; }
+  const owner=slugify(slug);
+  const path=pfPath(owner);
+  const doc=await readJson(path, {withSha:true});
+  if(doc===null) return {slug:owner, path, missing:true, sha:null, data:null};
+  try{ return {slug:owner, path, missing:false, sha:doc.sha, data:parseJsonText(doc.text, path)}; }
   catch(err){ throw readFailure("parse", err.message); }
 }
 function portfolioPositions(file){
@@ -2703,39 +2804,54 @@ function portfolioPositions(file){
 }
 function failPortfolioLoad(text){
   // Okunamayan portföy boş sayılmaz: pozisyonlar gizlenir, yazma kapalı kalır.
+  S.pfDoc = null;
   S.positions = [];
   S.editingPos = null;
+  S.editingRow = null;
   S.relatedPortfolios = [];
   S.portfolioLoad = {state:"ERROR", text};
   renderPortfolio();
 }
 async function loadPortfolio(){
+  // Yalnız en son okuma, yalnız başladığı profil için uygulanır: profil
+  // değişince geç dönen eski okuma yeni profilin ekranına (ve oradan yeni
+  // profilin dosyasına) giremez.
+  const seq=++S.pfLoadSeq;
+  const owner=slugify(S.profile);
+  const current=()=>seq===S.pfLoadSeq && owner===slugify(S.profile);
   S.portfolioLoad = {state:"LOADING", text:""};
+  S.pfDoc = null;
   let file;
-  try{ file = await readPortfolioFile(S.profile); }
+  try{ file = await readPortfolioFile(owner); }
   catch(e){
+    if(!current()) return;
     failPortfolioLoad(readFailureText(e));
     msg(e.message,"err");
     noteReadFailure(e);
     return;
   }
+  if(!current()) return;
   const positions = portfolioPositions(file);
   if(positions===null){
     failPortfolioLoad(PORTFOLIO_SHAPE_TEXT);
     msg("Portföy dosyası beklenen biçimde değil; değişiklik kaydedilmez.","err");
     return;
   }
+  S.pfDoc = file;
   S.positions = positions;
   S.editingPos = null;   // yeniden yüklemede eski düzenleme indeksi bayat olmasın
+  S.editingRow = null;
   S.relatedPortfolios = [];
   S.portfolioLoad = {state:"OK", text:""};
   for(const slug of parseRelatedProfiles(S.relatedProfiles)){
     // İzlenen bir profilin hatası kendi portföyünü ve diğerlerini boşaltmaz.
     try{
       const relPositions = portfolioPositions(await readPortfolioFile(slug));
+      if(!current()) return;
       if(relPositions===null) S.relatedPortfolios.push({slug, positions:[], error:PORTFOLIO_SHAPE_TEXT});
       else S.relatedPortfolios.push({slug, positions:relPositions});
     }catch(e){
+      if(!current()) return;
       S.relatedPortfolios.push({slug, positions:[], error:readFailureText(e)});
     }
   }
@@ -2753,8 +2869,14 @@ function updatePriceHint(){
     ? `${esc(sym)} kullanılan fiyat: ${fmt(quote.price)} TL${priceBadgeHtml(quote)}`
     : `${esc(sym)} için repo verisinde fiyat bulunamadı.${priceBadgeHtml(null)}`;
 }
+/* Yeni girilen ya da düzenlenen sembol: normSymbol sonrası yalnız büyük harf
+   (Türkçe dahil) ve rakam, 1–12 karakter. Var olan kayıtlar bu kurala bağlı
+   değildir (okunur, çizilir, silinebilir); kural yalnız yeni yazımı korur. */
+const PORTFOLIO_SYMBOL_RE=/^[\p{Lu}\p{Nd}]{1,12}$/u;
+const PORTFOLIO_SYMBOL_TEXT="Sembol yalnız harf ve rakamdan oluşmalı (en çok 12 karakter).";
+function validPortfolioSymbol(sym){ return PORTFOLIO_SYMBOL_RE.test(String(sym||"")); }
 function addPosition(){
-  if(!portfolioWritable()) return;
+  if(!portfolioWritable() || portfolioBusy()) return;
   const sym=normSymbol(document.getElementById("pfSym").value);
   // num() ile parse: virgül/nokta ondalık ayırıcı ve TR binlik güvenli;
   // maliyet hassasiyeti (örn. 3,697) yuvarlanmadan number'a çevrilir. (#290)
@@ -2762,24 +2884,133 @@ function addPosition(){
   const cost=num(document.getElementById("pfCost").value);
   if(!sym||qty===null||qty<=0||cost===null||cost<=0){
     msg("Sembol, adet ve maliyeti doldurun.","err"); return; }
-  const existing=S.positions.find(p=>normSymbol(p.symbol)===sym);
-  if(existing){ existing.symbol=sym; existing.quantity=qty; existing.avg_cost=cost; }
-  else S.positions.push({symbol:sym, quantity:qty, avg_cost:cost});
-  for (const id of ["pfSym","pfQty","pfCost"]) document.getElementById(id).value="";
-  renderPortfolio();
-  savePortfolio();  // tek akış (2026-07-04): her değişiklik anında repo'ya yazılır
+  if(!validPortfolioSymbol(sym)){ msg(PORTFOLIO_SYMBOL_TEXT,"err"); return; }
+  // Aynı sembol varsa güncellenir (mevcut davranış). İşlem kullanıcının
+  // gördüğü satıra bağlıdır: o satır başka cihazda değiştiyse üzerine yazılmaz.
+  const seen=S.positions.find(p=>normSymbol(p.symbol)===sym);
+  // Tek akış (2026-07-04): her değişiklik anında repo'ya yazılır. Girdi
+  // alanları yalnız kayıt başarılı olunca temizlenir.
+  commitPortfolioOp({kind:"upsert", symbol:sym, quantity:qty, avg_cost:cost,
+                     base: seen ? clonePosition(seen) : null}).then(done=>{
+    if(!done) return;
+    for (const id of ["pfSym","pfQty","pfCost"]) document.getElementById(id).value="";
+    updatePriceHint();
+  });
 }
 function delPosition(i){
-  if(!portfolioWritable()) return;
-  S.positions.splice(i,1); renderPortfolio(); savePortfolio();
+  if(!portfolioWritable() || portfolioBusy()) return;
+  const index=Number(i);
+  const row=Number.isInteger(index) ? S.positions[index] : null;
+  if(!row) return;
+  commitPortfolioOp({kind:"delete", row:clonePosition(row), index});
 }
-async function savePortfolio(){
-  if(!portfolioWritable()) return;
+
+/* ===== Portföy işlemleri: çakışmaya dayanıklı kayıt (20261112-webapp-safety-fix)
+   Her kullanıcı eylemi bir işlemdir: upsert (ekle/güncelle formu), edit, delete.
+   İşlem okunan sürümün (sha) üzerine uygulanıp o sha ile yazılır. Başka cihaz
+   bu arada yazdıysa en güncel sürüm okunur ve işlem onun üzerine yeniden
+   uygulanır (en çok PORTFOLIO_COMMIT_ATTEMPTS deneme). İşlemin dokunduğu satır
+   başka cihazda değişmiş ya da silinmişse hiçbir şey yazılmaz: çakışma
+   kullanıcıya söylenir, güncel liste gösterilir. Farklı satırlardaki
+   eşzamanlı değişiklikler birleşir. Kayıt sürerken yeni işlem alınmaz;
+   başarısız kayıttan sonra ekran onaylanmış durumu gösterir. */
+const PORTFOLIO_COMMIT_ATTEMPTS=3;
+function clonePosition(p){ return JSON.parse(JSON.stringify(p)); }
+function stableJson(value){
+  if(Array.isArray(value)) return "["+value.map(stableJson).join(",")+"]";
+  if(value && typeof value==="object"){
+    return "{"+Object.keys(value).sort().map(k=>JSON.stringify(k)+":"+stableJson(value[k])).join(",")+"}";
+  }
+  return JSON.stringify(value===undefined ? null : value);
+}
+function samePosition(a, b){ return stableJson(a)===stableJson(b); }
+function findPositionByValue(list, row, hint){
+  if(Number.isInteger(hint) && hint>=0 && hint<list.length && samePosition(list[hint], row)) return hint;
+  return list.findIndex(p=>samePosition(p, row));
+}
+/* Saf: verilen listeye işlemi uygular. {positions} | {positions, noop} | {conflict}. */
+function applyPortfolioOp(positions, op){
+  const list=positions.map(clonePosition);
+  if(op.kind==="upsert"){
+    const at=list.findIndex(p=>normSymbol(p.symbol)===op.symbol);
+    const seen=at>=0 ? list[at] : null;
+    const unchanged=(seen===null && op.base===null) || (seen!==null && op.base!==null && samePosition(seen, op.base));
+    if(!unchanged) return {conflict:true};
+    if(seen) list[at]={...seen, symbol:op.symbol, quantity:op.quantity, avg_cost:op.avg_cost};
+    else list.push({symbol:op.symbol, quantity:op.quantity, avg_cost:op.avg_cost});
+    return {positions:list};
+  }
+  if(op.kind==="edit" || op.kind==="delete"){
+    const at=findPositionByValue(list, op.row, op.index);
+    if(at<0){
+      // Silinecek sembolle hiç satır kalmadıysa silme zaten gerçekleşmiştir.
+      if(op.kind==="delete" && !list.some(p=>normSymbol(p.symbol)===normSymbol(op.row.symbol))){
+        return {positions:list, noop:true};
+      }
+      return {conflict:true};
+    }
+    if(op.kind==="delete") list.splice(at, 1);
+    else list[at]={...list[at], symbol:op.symbol, quantity:op.quantity, avg_cost:op.avg_cost};
+    return {positions:list};
+  }
+  return {conflict:true};
+}
+function adoptPortfolioDoc(doc){
+  const positions=portfolioPositions(doc);
+  if(positions===null){ failPortfolioLoad(PORTFOLIO_SHAPE_TEXT); return; }
+  S.pfDoc=doc;
+  S.positions=positions;
+  // Açık bir düzenleme liste kaydıysa kendi satırını DEĞERİYLE izler; satır
+  // artık yoksa kapanır. Aksi halde düzenleme kutuları başka bir satırın
+  // değerleriyle dolardı.
+  if(S.editingRow){
+    const at=findPositionByValue(positions, S.editingRow, S.editingPos);
+    if(at<0){ S.editingPos=null; S.editingRow=null; }
+    else S.editingPos=at;
+  }
+  renderPortfolio();
+}
+const PORTFOLIO_OUTCOME_TEXT={
+  saved: "Portföy repo'ya kaydedildi.",
+  noop: "Satır başka bir cihazda zaten kaldırılmış; güncel liste gösteriliyor.",
+  conflict: "Bu satır başka bir cihazda değişmiş; üzerine yazılmadı. Güncel liste gösteriliyor, gerekirse değişikliği tekrar yap.",
+  moved: "Profil değiştiği için kayıt yapılmadı.",
+};
+async function commitPortfolioOp(op){
+  if(!portfolioWritable() || portfolioBusy()) return false;
+  const start=S.pfDoc;
+  const loadSeq=S.pfLoadSeq;
+  S.pfSaving=true;
+  renderPortfolio();
+  let doc=start, outcome=null;
   try{
-    await writeJson(pfPath(S.profile), {positions:S.positions},
-      `webapp: ${slugify(S.profile)} portfolio update`);
-    msg("Portföy repo'ya kaydedildi.");
-  }catch(e){ msg(e.message,"err"); }
+    for(let attempt=0; attempt<PORTFOLIO_COMMIT_ATTEMPTS && !outcome; attempt++){
+      if(doc.slug!==slugify(S.profile)){ outcome={kind:"moved"}; break; }
+      const base=portfolioPositions(doc);
+      if(base===null){ outcome={kind:"error", text:PORTFOLIO_SHAPE_TEXT}; break; }
+      const applied=applyPortfolioOp(base, op);
+      if(applied.conflict){ outcome={kind:"conflict"}; break; }
+      if(applied.noop){ outcome={kind:"noop"}; break; }
+      const put=await putPortfolioDoc(doc, applied.positions);
+      if(put.status==="ok"){ doc=put.doc; outcome={kind:"saved"}; break; }
+      if(put.status==="error"){ outcome={kind:"error", text:put.text}; break; }
+      // "stale": başka cihaz yazdı. En güncel sürümü oku, işlemi yeniden uygula.
+      doc=await readPortfolioFile(doc.slug);
+    }
+    if(!outcome) outcome={kind:"conflict"};  // deneme hakkı bitti: üzerine yazılmaz
+  }catch(e){
+    outcome={kind:"error", text:readFailureText(e)};
+  }finally{
+    S.pfSaving=false;
+  }
+  // Ekran yalnız aynı profil için ve bu arada yeni bir okuma başlamadıysa son
+  // onaylanmış sürüme geçer; aksi halde güncel hali yeniden okunur.
+  if(S.pfLoadSeq===loadSeq && S.pfDoc===start && doc.slug===slugify(S.profile)) adoptPortfolioDoc(doc);
+  else if(doc.slug===slugify(S.profile)) loadPortfolio();
+  else renderPortfolio();
+  if(outcome.kind==="error") msg(`Kaydedilemedi (${outcome.text}); değişiklik uygulanmadı.`,"err");
+  else msg(PORTFOLIO_OUTCOME_TEXT[outcome.kind], outcome.kind==="saved" || outcome.kind==="noop" ? undefined : "err");
+  return outcome.kind==="saved" || outcome.kind==="noop";
 }
 
 function detailField(row, key, fallback="-"){ const value=row ? row[key] : null; return value===null || value===undefined || value==="" ? fallback : value; }
@@ -3050,7 +3281,7 @@ const MGB = (() => {
   function drawTip(W,H,yOf){
     const i=ST.tipIdx, D=ST.data, tip=$("mgbTip");
     const ep=activeEpisodeAt(i);
-    let html=`<b>${ST.sym}</b> ${fmtDate(D.t[i])}<br>Kapanış: <b>${fmtP(D.c[i])}</b> `+
+    let html=`<b>${esc(ST.sym)}</b> ${fmtDate(D.t[i])}<br>Kapanış: <b>${fmtP(D.c[i])}</b> `+
              `(A:${fmtP(D.l[i])} / Y:${fmtP(D.h[i])})`;
     if(ep){
       const dist=ep.trail[i]!=null?((D.c[i]/ep.trail[i]-1)*100):null;
@@ -3486,11 +3717,11 @@ function renderWatchlist(){
     const quote=currentQuoteFor(sym);
     const chg=dailyChangeFor(sym);
     const company=companyNameFor(sym, visibleCandidateRow(sym)||{});
-    html+=`<tr class="clickable" onclick="selectDetail('${sym}')"><td><b>${esc(sym)}</b></td>`+
+    html+=`<tr class="clickable"${actionAttrs("selectDetail", {symbol: sym})}><td><b>${esc(sym)}</b></td>`+
       `<td class="name-cell" title="${esc(company)}">${esc(company)||"—"}</td>`+
       `<td class=num data-src="${quote?esc(quote.source):''}">${quote?fmt(quote.price):"-"}${priceBadgeHtml(quote)}</td>`+
       `<td class="num ${changeCellCls(chg)}">${fmtChangeCell(chg)}</td>`+
-      `<td><button class="del" title="Listeden çıkar" onclick="event.stopPropagation();watchlistRemove('${sym}')">x</button></td></tr>`;
+      `<td><button class="del" type="button" title="Listeden çıkar"${actionAttrs("watchlistRemove", {symbol: sym})}>x</button></td></tr>`;
   }
   wrap.innerHTML=html+"</table></div>";
 }
@@ -3568,19 +3799,19 @@ async function renderHisseler(){
   }
   rows.sort(compareHisseler);
   meta.textContent=`${rows.length} hisse · veri tarihi: ${bundleDateSummary(bars)}`;
-  let html=`<tr><th class="col-sym sortable" onclick="setHisselerSort('sym')">Hisse${sortMark("sym")}</th>`+
+  let html=`<tr><th class="col-sym sortable"${actionAttrs("setHisselerSort", {sort: "sym"})}>Hisse${sortMark("sym")}</th>`+
     `<th>Şirket Adı</th>`+
-    `<th class="col-price num sortable" onclick="setHisselerSort('price')">Fiyat${sortMark("price")}</th>`+
-    `<th class="col-chg num sortable" onclick="setHisselerSort('chg')">Günlük${sortMark("chg")}</th>`+
+    `<th class="col-price num sortable"${actionAttrs("setHisselerSort", {sort: "price"})}>Fiyat${sortMark("price")}</th>`+
+    `<th class="col-chg num sortable"${actionAttrs("setHisselerSort", {sort: "chg"})}>Günlük${sortMark("chg")}</th>`+
     `<th class="col-star"></th></tr>`;
   for(const r of rows){
     const starred=watchlistHas(r.sym);
-    html+=`<tr class="clickable" onclick="selectDetail('${r.sym}')"><td data-src="${esc(r.source)}"><b>${esc(r.sym)}</b></td>`+
+    html+=`<tr class="clickable"${actionAttrs("selectDetail", {symbol: r.sym})}><td data-src="${esc(r.source)}"><b>${esc(r.sym)}</b></td>`+
       `<td class="name-cell" title="${esc(r.company)}">${esc(r.company)||"—"}</td>`+
       `<td class=num>${r.price!==null?fmt(r.price):"-"}${priceBadgeHtml(r.quote)}</td>`+
       `<td class="num ${changeCellCls(r.chg)}">${fmtChangeCell(r.chg)}</td>`+
-      `<td><button class="wl-star${starred?" on":""}" title="${starred?"Takip listesinden çıkar":"Takip listesine ekle"}" `+
-      `onclick="event.stopPropagation();watchlistToggle('${r.sym}')">${starred?"★":"☆"}</button></td></tr>`;
+      `<td><button class="wl-star${starred?" on":""}" type="button" title="${starred?"Takip listesinden çıkar":"Takip listesine ekle"}"`+
+      `${actionAttrs("watchlistToggle", {symbol: r.sym})}>${starred?"★":"☆"}</button></td></tr>`;
   }
   table.innerHTML=html;
   checkStaleUiRemnants();  // eski cache'lenmiş HTML kalıntısı teşhisi (PR #304)
@@ -3643,7 +3874,7 @@ async function renderSector(){
     const isMe=r.sym===sym;
     const style=r.score!==null?` style="background:${heatColor(r.score)}"`:"";
     const cls=`clickable ${r.score!==null?`heat${isMe?" me":""}`:""}`;
-    html+=`<tr class="${cls}"${style} onclick="selectDetail('${r.sym}')"><td>${isMe?"★ ":""}<b>${esc(r.sym)}</b></td>`+
+    html+=`<tr class="${cls}"${style}${actionAttrs("selectDetail", {symbol: r.sym})}><td>${isMe?"★ ":""}<b>${esc(r.sym)}</b></td>`+
       `<td class=num>${r.score!==null?r.score:"veri az"}</td>`+
       SECTOR_DIMS.map(([key,,,digits,isPct])=>{
         const v=r[key];
@@ -3753,6 +3984,7 @@ async function boot(){
   await Promise.all([market, portfolio]);
 }
 applyFontSizePreference();  // kaydedilmiş yazı boyutunu ilk çizimden önce uygula
+document.addEventListener("click", handleUiAction);  // script'in çizdiği bütün eylemler (UI_ACTIONS)
 window.addEventListener("focus", wakePriceRefresh);
 document.addEventListener("visibilitychange", wakePriceRefresh);
 setInterval(refreshVisiblePriceSurface, PRICE_VIEW_REFRESH_MS);
